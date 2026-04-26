@@ -1,0 +1,15 @@
+# Fault restore: re-enable simulated GPS (GPS1)
+# Effect: SIM_GPS1_ENABLE = 1 restores GPS data flow to the autopilot.
+#         After restoration, the EKF re-acquires the position estimate
+#         and the bad-variance flag clears once the fail_count drops to 0.
+#         The console will show EKF healthy messages.
+#
+# NOTE: After restoring GPS, wait approximately 5-10 seconds for the EKF
+#       to re-initialise before issuing any position-dependent commands
+#       (RTL, GUIDED, LOITER).
+#
+# MAVProxy usage:
+#   param load course/labs/intro-arducopter-aero-y1/l3-closing-lab/faults/inject_gps_restore.parm
+# Or directly:
+#   param set SIM_GPS1_ENABLE 1
+SIM_GPS1_ENABLE 1

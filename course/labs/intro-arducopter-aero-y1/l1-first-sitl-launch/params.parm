@@ -1,0 +1,4 @@
+# Lab L1 — parameter overrides
+# No parameter overrides. All defaults are used.
+# This file is intentionally empty of active entries.
+# MAVProxy usage: param load l1-first-sitl-launch/params.parm

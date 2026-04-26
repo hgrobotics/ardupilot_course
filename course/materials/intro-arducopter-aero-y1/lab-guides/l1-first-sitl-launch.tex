@@ -1,0 +1,354 @@
+% lab-guides/l1-first-sitl-launch.tex
+% Single source for Lab L1 student + instructor PDFs. Version is gated via
+% shared/version-flags.tex (set by the Makefile through -def \instructorversion).
+% Student build:    pdflatex l1-first-sitl-launch.tex
+% Instructor build: pdflatex "\def\instructorversion{}\input{l1-first-sitl-launch.tex}"
+
+\documentclass[a4paper,11pt,twoside]{article}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, margin=2.2cm]{geometry}
+\usepackage{titling}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\setlist[enumerate]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  pdftitle={Lab L1 --- First SITL Launch},
+}
+\usepackage{url}
+\usepackage{fancyvrb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+\usepackage{array}
+\usepackage{longtable}
+
+\input{../shared/macros.tex}
+
+% Article-style overrides for the instructor-note macros (originally Beamer blocks).
+\renewcommand{\instnote}[1]{\ifinstructor\begin{tcolorbox}[colback=blue!4!white,colframe=blue!40!black,title=Instructor note,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\insttiming}[1]{\ifinstructor\begin{tcolorbox}[colback=orange!5!white,colframe=orange!50!black,title=Pacing,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\instfaq}[2]{\ifinstructor\begin{tcolorbox}[colback=green!4!white,colframe=green!40!black,title=Anticipated Q: #1,breakable]#2\end{tcolorbox}\fi}
+\renewcommand{\instadvanced}[1]{\ifinstructor\begin{tcolorbox}[colback=violet!5!white,colframe=violet!50!black,title=Advanced material pointer,breakable]#1\end{tcolorbox}\fi}
+
+\title{Lab L1 --- First SITL Launch\\
+  \large \ifinstructor Instructor Guide\else Student Guide\fi}
+\author{\copyrightline}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Codebase reference:} branch \texttt{GNC-0.1} of \href{\repourl}{\nolinkurl{hgrobotics/ardupilot_course}}. Every source-code link in this lab guide opens the cited file at the named line on GitHub.
+
+\bigskip
+
+\ifinstructor
+% =============================================================================
+% INSTRUCTOR EDITION
+% =============================================================================
+
+\begin{tcolorbox}[colback=red!5!white,colframe=red!40!black,title=Instructor edition]
+This is the instructor edition. Do \textbf{not} hand this to students --- the student edition is the same source compiled without the instructor flag.
+\end{tcolorbox}
+
+\section*{Lab summary for the instructor}
+
+\textbf{What the student is supposed to learn:} that the ArduPilot SITL toolchain is correctly installed on their own machine; that \texttt{sim\_vehicle.py} starts a real autopilot binary whose MAVLink heartbeat is visible to a GCS. The lab has no flight; the entire pedagogical payload is environmental confidence.
+
+\textbf{Depth marker:} \emph{survey}. Students are not expected to understand what \texttt{sim\_vehicle.py} does internally --- \citerange{Tools/autotest/sim_vehicle.py}{1073}{1085} is read at survey depth in the module lecture. At this point they only need to know that typing one command produces a working simulator. Do not unpack the argument-parsing code, the SITL physics models, or the MAVLink dialect at this stage.
+
+\textbf{How this lab feeds later modules:} every downstream lab (L2, L3, and all plane/quadplane labs) assumes \texttt{sim\_vehicle.py} works. A student who leaves L1 with a broken environment will silently fail L2 and take lab time to diagnose. L1 is the cheapest place to catch environment problems. Plan for this lab to absorb environment failures that slipped through the Module 1.2 install.
+
+\textbf{Downstream course connection:} the downstream GNC plane and quadplane courses (\siblingplane, \siblingquadplane) use the identical \texttt{sim\_vehicle.py -v ArduPlane -f quadplane} invocation pattern. A student who completes L1 successfully knows the pattern; only the vehicle name and frame flag change.
+
+\section*{Pacing}
+
+The headless agent test runs in approximately 1 second (binary start + heartbeat). The student-facing lab is budgeted at 15 minutes:
+
+\begin{center}\small
+\begin{tabular}{|p{5.0cm}|p{3.2cm}|p{6.5cm}|}\hline
+\textbf{Step} & \textbf{Wall-clock time} & \textbf{Notes} \\ \hline
+Pre-condition check (binary exists?) & 1--2 min & Most students who completed Module 1.2 already have the binary. \\ \hline
+Step 1 --- Launch SITL & 1--2 min & Includes time for windows to open; SITL init to heartbeat is typically $<10$~s. \\ \hline
+Step 2 --- Verify console & 2--3 min & Students need time to locate the firmware version string. \\ \hline
+Step 3 --- Verify map & 1--2 min & Map tile download may add latency on first launch if tiles are not cached. \\ \hline
+Step 4 --- Record & 2--3 min & Encourage students to actually write the version string; they will reference it in Step B.6 of L3. \\ \hline
+Step 5 --- Exit & $<1$ min & \\ \hline
+\end{tabular}
+\end{center}
+
+\textbf{Total:} $\sim$10 min typical; 15 min budgeted (buffer absorbs environment issues).
+
+\textbf{Buffer:} if a student has not built the binary, \texttt{./waf copter} on a fresh configured tree takes 5--10 minutes on a typical laptop. If this happens, direct the student to start the build immediately and work with a neighbour's console for Steps 2--4 while waiting.
+
+\section*{Pre-arm setup checklist}
+
+Before students start:
+\begin{itemize}[label={[ ]}]
+  \item Confirm the ArduCopter SITL binary is already built on each student machine (\texttt{ls build/sitl/bin/arducopter}). If not, direct the student to run \texttt{./waf configure --board sitl \&\& ./waf copter} from the repository root immediately.
+  \item Confirm \texttt{mavproxy.py --version} succeeds (checks that MAVProxy is on PATH).
+  \item Confirm \texttt{python3 -c "from pymavlink import mavutil; print('OK')"} succeeds.
+  \item Confirm no stale SITL processes are running (\texttt{ps aux | grep arducopter}; kill any found).
+  \item On machines with low RAM ($<4$~GB), warn students that the map window may be slow.
+  \item If students are on WSL2, verify the Windows X server (VcXsrv or similar) is running before the lab. The \texttt{--console} and \texttt{--map} flags require a display.
+\end{itemize}
+
+\section*{Common student failures and what to say}
+
+\textbf{Exit code 10 from \texttt{test.sh} / ``SITL binary not found''}
+
+Diagnostic: \texttt{ls build/sitl/bin/arducopter}
+
+What to say: ``The binary was not built yet. Run \texttt{./waf configure --board sitl \&\& ./waf copter} from the repository root --- no sudo. Come back when the build finishes.''
+
+\textbf{Exit code 1 from \texttt{test.py} / no heartbeat within 30~s}
+
+Diagnostic: \texttt{ps aux | grep arducopter} --- look for a stale process holding port 5760.
+
+What to say: ``There is probably an old SITL instance still running. Kill it, then re-run the launch command.''
+
+\textbf{\texttt{ImportError: No module named pymavlink} in \texttt{test.py}}
+
+Diagnostic: \texttt{python3 -c "from pymavlink import mavutil"}
+
+What to say: ``The Python prerequisites are not installed in the active Python environment. Re-run \texttt{Tools/environment\_install/install-prereqs-ubuntu.sh} and open a new terminal.''
+
+\textbf{Map window does not open or shows blank tiles}
+
+This is a display issue, not a SITL issue. The lab pass criterion is the heartbeat only --- the map is an observation aid. Tell the student to verify Steps 2 and 4 (console and heartbeat) and move on.
+
+\textbf{\texttt{sim\_vehicle.py} exits immediately with \texttt{waf: error:}}
+
+\texttt{sim\_vehicle.py} without \texttt{-N} tries to rebuild. Without \texttt{-N} and with a misconfigured \texttt{waf}, it can fail. Confirm the student is using \texttt{-N} (no rebuild) or that the binary already exists.
+
+\section*{Verdict signatures}
+
+The automated harness (\texttt{test.sh} + \texttt{test.py}) checks exactly one thing:
+
+\begin{center}\small
+\begin{tabular}{|p{4.5cm}|p{6.5cm}|p{3.5cm}|}\hline
+\textbf{Signal} & \textbf{Check} & \textbf{Pass value} \\ \hline
+TCP connection to \texttt{127.0.0.1:5760} & \texttt{socket.connect} succeeds within 10~s & connected \\ \hline
+MAVLink HEARTBEAT & \texttt{mav.wait\_heartbeat(timeout=30)} & received within 30~s \\ \hline
+\end{tabular}
+\end{center}
+
+Exit codes:
+
+\begin{center}\small
+\begin{tabular}{|c|p{12cm}|}\hline
+\textbf{Code} & \textbf{Meaning} \\ \hline
+\texttt{0} & PASS --- heartbeat received \\ \hline
+\texttt{1} & FAIL --- heartbeat not received within 30~s \\ \hline
+\texttt{10} & FAIL --- binary not found or pymavlink import error \\ \hline
+\end{tabular}
+\end{center}
+
+Student-visible GCS checks (not tested by the harness, but expected by the lab spec):
+\begin{itemize}
+  \item \texttt{APM:Copter V} in the MAVProxy console (STATUSTEXT at \texttt{MAV\_SEVERITY\_INFO})
+  \item Mode \texttt{STABILIZE}, armed state \texttt{DISARMED}
+  \item No \texttt{MAV\_SEVERITY\_CRITICAL} or \texttt{MAV\_SEVERITY\_EMERGENCY} STATUSTEXT during this lab
+\end{itemize}
+
+\section*{Pointers to advanced material}
+
+\begin{itemize}
+  \item The \texttt{sim\_vehicle.py} argument-parsing block at \citerange{Tools/autotest/sim_vehicle.py}{1073}{1085} is where \texttt{-v ArduCopter} and \texttt{-f quad} are handled. The downstream GNC courses use \texttt{-v ArduPlane -f quadplane}; the code path is identical.
+  \item The single-line binary lookup at \citeline{Tools/autotest/sim_vehicle.py}{287} shows how \texttt{sim\_vehicle.py} finds \texttt{ArduCopter.elf}. This is the entry point for a deeper \texttt{--help} walk in Module 1.2.
+  \item The downstream GNC quadplane course's Day 1 introduces \texttt{sim\_vehicle.py} flags for custom locations (\texttt{--home}) and speedup (\texttt{--speedup}). Students will reuse their L1 confidence with the basic invocation.
+\end{itemize}
+
+\else
+% =============================================================================
+% STUDENT EDITION
+% =============================================================================
+
+\section*{What you will do}
+
+In this lab you will launch the ArduCopter Software-In-The-Loop (SITL) simulator on your own laptop and confirm that the simulated vehicle is alive and talking MAVLink. There is no flying --- you are checking that the environment is correctly installed and that the autopilot binary starts, opens its telemetry port, and announces itself to a ground-control station. Getting this smoke test to pass is the foundation everything else in the course depends on, so take your time and read each step carefully.
+
+\section*{Before you start}
+
+\textbf{Previous labs required:} none --- this is the first lab.
+
+\textbf{Software that must already be installed} (done in Module 1.2):
+\begin{itemize}
+  \item Ubuntu 22.04 or 24.04 (native or WSL2 on Windows).
+  \item ArduPilot prerequisites installed via \texttt{Tools/environment\_install/install-prereqs-ubuntu.sh}.
+  \item The ArduPilot repository cloned with submodules (\texttt{git clone --recurse-submodules}).
+  \item \texttt{python3} and \texttt{mavproxy.py} on your PATH (the prerequisites script installs both).
+\end{itemize}
+
+\textbf{What must be true before you run Step 1:}
+\begin{itemize}
+  \item The SITL binary exists at \texttt{build/sitl/bin/arducopter} inside the repository. If you see a ``file not found'' error, build it first:
+\begin{Verbatim}[frame=single,fontsize=\small]
+./waf configure --board sitl
+./waf copter
+\end{Verbatim}
+  Run those two commands from the repository root. Do \textbf{not} use \texttt{sudo}.
+\end{itemize}
+
+\textbf{Windows open:} you need at least one terminal window open at the repository root. The \texttt{sim\_vehicle.py} script will open the MAVProxy console and map windows for you automatically.
+
+\section*{The steps}
+
+\textbf{Total estimated time:} 15 minutes.\\
+\textbf{Goal:} confirm SITL is running and a MAVProxy heartbeat is visible.
+
+\subsection*{Pre-conditions}
+\begin{itemize}
+  \item SITL binary exists: \texttt{build/sitl/bin/arducopter}
+  \item If missing, run from the repo root:
+\begin{Verbatim}[frame=single,fontsize=\small]
+./waf configure --board sitl
+./waf copter
+\end{Verbatim}
+\end{itemize}
+
+\subsection*{Step 1 --- Launch SITL}
+
+From the repository root, run:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+python3 Tools/autotest/sim_vehicle.py -v ArduCopter -f quad -N --console --map
+\end{Verbatim}
+
+Or use the provided launch script:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+bash course/labs/intro-arducopter-aero-y1/l1-first-sitl-launch/launch.sh
+\end{Verbatim}
+
+\textbf{What you will see:}
+\begin{itemize}
+  \item A terminal window labelled ``MAVProxy'' appears.
+  \item A second window showing the MAVProxy command prompt appears.
+  \item A map window opens.
+  \item The terminal shows lines like:
+\begin{Verbatim}[frame=single,fontsize=\small]
+Detected vehicle ArduCopter
+online system 1
+\end{Verbatim}
+\end{itemize}
+
+\textbf{Wait:} up to 30 seconds for the heartbeat line \texttt{online system 1}.
+
+\subsection*{Step 2 --- Verify the console}
+
+In the MAVProxy console window, confirm:
+\begin{itemize}
+  \item A line containing \texttt{APM:Copter V} (the firmware version banner).
+  \item Mode shown as \texttt{STABILIZE}.
+  \item Battery reading (simulated; should be around 12.6~V).
+\end{itemize}
+
+\subsection*{Step 3 --- Verify the map}
+
+Check the map window:
+\begin{itemize}
+  \item A vehicle icon appears near Canberra, Australia (approximately $-35.36$, $149.17$).
+  \item The icon does not move (vehicle is on the ground, disarmed).
+\end{itemize}
+
+\subsection*{Step 4 --- Record}
+
+Write down in your lab notebook:
+\begin{itemize}
+  \item The ArduCopter firmware version string (from \texttt{APM:Copter V...}).
+  \item The current time shown in the MAVProxy console.
+\end{itemize}
+
+\subsection*{Step 5 --- Exit SITL (end of lab)}
+
+In the MAVProxy command terminal, type:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+exit
+\end{Verbatim}
+
+This terminates the MAVProxy session and the SITL process.
+
+\subsection*{Fault injection}
+
+None in this lab.
+
+\subsection*{Restoring state}
+
+No state changes are made. Each SITL launch starts fresh.
+
+\section*{What success looks like}
+
+You have passed this lab when all of the following are true:
+\begin{enumerate}
+  \item The \texttt{sim\_vehicle.py} command ran without printing any Python traceback or \texttt{ERROR:} line.
+  \item Within 30 seconds of launch, the MAVProxy terminal printed \texttt{online system 1}.
+  \item Within 30 seconds of launch, the MAVProxy terminal printed \texttt{Detected vehicle ArduCopter}.
+  \item The MAVProxy console showed \texttt{APM:Copter V} (the firmware version line).
+  \item The map window rendered a vehicle icon near Canberra, Australia.
+\end{enumerate}
+
+You do not need to fly anything. The vehicle stays on the ground, disarmed, throughout the lab.
+
+\section*{Common mistakes and quick fixes}
+
+\textbf{1. ``SITL binary not found'' or \texttt{build/sitl/bin/arducopter} is missing}
+
+You have not built the SITL binary yet, or the build failed. From the repository root:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+./waf configure --board sitl
+./waf copter
+\end{Verbatim}
+
+If \texttt{waf} is not on your PATH, use \texttt{./waf} (there is a \texttt{waf} script at the repository root). Never run \texttt{waf} with \texttt{sudo}.
+
+\textbf{2. The MAVProxy windows do not open (no console, no map)}
+
+On Ubuntu, the \texttt{--console} and \texttt{--map} windows require a display. If you are in a headless SSH session, you will need to either work at a physical terminal or use X forwarding (\texttt{ssh -X}). The automated lab test is designed to run headlessly --- that is a separate path for the grading agent, not for your interactive session.
+
+\textbf{3. \texttt{online system 1} never appears after 30 seconds}
+
+The most common cause is that a previous SITL session is still running and holding the port. Check with:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+ps aux | grep arducopter
+\end{Verbatim}
+
+Kill any stray processes (\texttt{kill <PID>}), then re-run Step 1.
+
+\textbf{4. MAVProxy says \texttt{no module named ...} or \texttt{ImportError}}
+
+The Python prerequisites are not installed, or your terminal is using the wrong Python. Run:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+python3 -c "import pymavlink; print('OK')"
+\end{Verbatim}
+
+If that fails, re-run \texttt{Tools/environment\_install/install-prereqs-ubuntu.sh} and open a fresh terminal so the updated \texttt{PATH} takes effect.
+
+\textbf{5. Working directory error --- ``no such file or directory'' for \texttt{sim\_vehicle.py}}
+
+You must run commands from the repository root (the directory containing \texttt{ArduCopter/}, \texttt{libraries/}, \texttt{Tools/}, etc.). Use \texttt{pwd} to confirm your location. If you are inside a subdirectory, \texttt{cd} back to the root:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+cd ~/ardupilot   # or wherever you cloned the repo
+\end{Verbatim}
+
+\section*{Where to go next}
+
+\textbf{Next lab:} Lab L2 --- First Flight --- arm the vehicle, climb to 10~m, and land.
+
+\textbf{Module reference:} this lab is the hands-on portion of \textbf{Module 1.2 --- Set up your laptop: install, build, and launch SITL} in the course markdown at \citefile{course/intro_arducopter_aero_y1.md}.
+
+\fi
+
+\end{document}

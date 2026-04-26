@@ -1,0 +1,18 @@
+# Fault: disable simulated GPS (GPS1)
+# Effect: SIM_GPS1_ENABLE = 0 stops the SITL GPS driver from sending
+#         GPS data to the autopilot. The EKF loses the position fix,
+#         variance rises above FS_EKF_THRESH (0.8), and after
+#         EKF_CHECK_ITERATIONS_MAX (10) consecutive bad checks at 10 Hz
+#         (= ~1 s), the EKF failsafe fires.
+#
+# Parameter: SIM_GPS1_ENABLE
+# Declared: libraries/SITL/SIM_GPS.cpp:42
+#   AP_GROUPINFO_FLAGS("ENABLE", 1, GPSParms, enabled, 0, AP_PARAM_FLAG_ENABLE)
+# Full param name in SITL: SIM_GPS1_ENABLE (SIM group + GPS1_ subgroup + ENABLE field)
+# Verified in Tools/autotest/arducopter.py (multiple set_parameter calls)
+#
+# MAVProxy usage:
+#   param load course/labs/intro-arducopter-aero-y1/l3-closing-lab/faults/inject_gps_off.parm
+# Or directly:
+#   param set SIM_GPS1_ENABLE 0
+SIM_GPS1_ENABLE 0

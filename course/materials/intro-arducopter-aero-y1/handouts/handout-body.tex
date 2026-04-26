@@ -1,0 +1,328 @@
+% handouts/student.tex
+% Single-source handout. Same .tex compiled in both versions via version-flags.tex.
+% Student build: pdflatex student.tex
+% Instructor build: pdflatex "\def\instructorversion{}\input{student.tex}"
+% (filename is "student.tex" by convention but the gate determines content.)
+\documentclass[a4paper,11pt,twoside]{article}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, margin=2.2cm]{geometry}
+\usepackage{titling}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\setlist[enumerate]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  pdftitle={Introduction to ArduCopter --- Handout},
+}
+\usepackage{url}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\input{../shared/macros.tex}
+
+% Override macros for the article context: \texttt-styled cites work the same.
+% \instnote / \insttiming / \instfaq / \instadvanced redefine cleanly because in
+% the handout we want them as tcolorboxes, not Beamer blocks.
+\renewcommand{\instnote}[1]{\ifinstructor\begin{tcolorbox}[colback=blue!4!white,colframe=blue!40!black,title=Instructor note,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\insttiming}[1]{\ifinstructor\begin{tcolorbox}[colback=orange!5!white,colframe=orange!50!black,title=Pacing,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\instfaq}[2]{\ifinstructor\begin{tcolorbox}[colback=green!4!white,colframe=green!40!black,title=Anticipated Q: #1,breakable]#2\end{tcolorbox}\fi}
+\renewcommand{\instadvanced}[1]{\ifinstructor\begin{tcolorbox}[colback=violet!5!white,colframe=violet!50!black,title=Advanced material pointer,breakable]#1\end{tcolorbox}\fi}
+
+\title{Introduction to ArduCopter for First-Year Aerospace Engineering Students\\
+  \large Handout --- \ifinstructor Instructor Edition\else Student Edition\fi}
+\author{\copyrightline}
+\date{8 h / 2 days}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Codebase reference:} branch \texttt{GNC-0.1} of \href{\repourl}{\nolinkurl{hgrobotics/ardupilot_course}}. Every link in this handout opens the cited file at the named line on GitHub.
+
+\noindent\textbf{Source of truth:} the course markdown at \citefile{course/intro_arducopter_aero_y1.md}. This handout is a printable companion --- the markdown is canonical.
+
+\ifinstructor
+\begin{tcolorbox}[colback=red!5!white,colframe=red!40!black,title=Instructor edition]
+This is the instructor edition. It contains pacing notes, anticipated student questions, and pointers into the downstream GNC courses (\siblingplane, \siblingquadplane). Do \textbf{not} hand this to students --- the student edition is the same source compiled without the instructor flag.
+\end{tcolorbox}
+\fi
+
+\section*{Acronyms}
+\begin{itemize}
+  \item \textbf{PID} --- Proportional-Integral-Derivative controller. ArduPilot's standard feedback-control building block.
+  \item \textbf{EKF} --- Extended Kalman Filter. The state estimator. Black box for this course.
+  \item \textbf{IMU} --- Inertial Measurement Unit. Accelerometers + gyroscopes.
+  \item \textbf{GCS} --- Ground Control Station. \textsc{MAVProxy} in this course (text only).
+  \item \textbf{MAVLink} --- the binary message protocol between autopilot and GCS.
+  \item \textbf{MAV\_CMD} --- a MAVLink command identifier (e.g. \texttt{MAV\_CMD\_NAV\_WAYPOINT}).
+  \item \textbf{RTL} --- Return To Launch.
+  \item \textbf{AHRS} --- Attitude and Heading Reference System (the abstraction; EKF implements it).
+  \item \textbf{SITL} --- Software In The Loop. Same binary, on your laptop.
+\end{itemize}
+
+\section*{Audience}
+First-year aerospace engineering undergraduates. High-school physics in hand; basic calculus in progress. \textbf{No} prior controls theory, embedded systems, Linux fluency, or programming. In-person, TA-supported computer lab. The autopilot runs in SITL on student laptops --- no real flight, no bench hardware.
+
+\section*{Course at a glance}
+\begin{center}\small
+\begin{tabular}{|l|l|c|c|c|}\hline
+Day & Theme & Modules (h) & Buffer (h) & Total (h) \\ \hline
+1 & Set up SITL, first flight, flight modes, parameters & 3.5 & 0.5 & 4.0 \\ \hline
+2 & Sensors, scheduler, data path, failsafes, closing lab & 3.5 & 0.5 & 4.0 \\ \hline
+\multicolumn{2}{|r|}{\textbf{Total}} & \textbf{7.0} & \textbf{1.0} & \textbf{8.0} \\ \hline
+\end{tabular}
+\end{center}
+
+\hrule\bigskip
+\section{Day 1 --- Set up SITL, first flight, flight modes, parameters}
+
+\subsection*{Day 1 goal}
+By the end of Day 1, every student has SITL on their own laptop, can launch a simulated quadcopter, can arm / take off / hover / switch mode / land / disarm using MAVProxy commands, and can change a parameter and observe a behaviour change.
+
+\subsection{Module 1.1 --- What is an autopilot, ArduPilot, SITL? (30 min, \emph{survey})}
+
+An autopilot is the software that decides, hundreds of times per second, what each motor on the vehicle should do. ArduPilot is one of the two large open-source autopilot stacks (the other is PX4). It targets small unmanned vehicles and supports many vehicle types out of one source tree.
+
+\textbf{Key handoff:} the same ArduPilot code we read together also runs unchanged on a real flight controller. The difference between a Pixhawk and your laptop is only the HAL backend: \codepath{AP\_HAL\_ChibiOS} for STM32, \codepath{AP\_HAL\_SITL} for the simulator, \codepath{AP\_HAL\_Linux}, \codepath{AP\_HAL\_ESP32}.
+
+\textbf{Two pieces of context to carry forward.} ArduPilot is safety-critical software --- the code we read flies real vehicles, so every change must be correct, tested, and reviewable by a human maintainer. That posture is why the codebase looks the way it does: verbose names, compile-time feature flags (\codepath{\#if AP\_<FEATURE>\_ENABLED}), and a hardware abstraction layer between autopilot and silicon. The architecture is three layers: the six vehicle directories at the top level, a large \codepath{libraries/} tree of sensor drivers and controllers, and the HAL with its four backends listed above.
+
+\textbf{Code-reading} (open and look only at what the heading line tells you):
+\begin{itemize}
+  \item \citeline{ArduCopter/Copter.h}{181} --- one line: \texttt{class Copter : public AP\_Vehicle \{}. The file you will return to all course.
+\end{itemize}
+
+\instnote{Module 1.1 is half a slide on landscape and three short cites. Resist deepening into release cadence or governance.}
+\insttiming{30 min budget. Demo at the end is $\sim$5 min --- tight.}
+
+\subsection{Module 1.2 --- Set up your laptop: install, build, launch (1 h, lab, \emph{applied})}
+
+Most of the hour is waiting for \texttt{apt} and the build. Reference docs to \emph{bookmark}, not read end-to-end:
+\begin{itemize}
+  \item \citefile{BUILD.md} --- Waf in depth.
+  \item \citefile{Tools/environment_install/install-prereqs-ubuntu.sh} --- the prereqs installer.
+\end{itemize}
+
+\textbf{Two anchors that show what \texttt{-v ArduCopter} does:}
+\begin{itemize}
+  \item \citeline{Tools/autotest/sim_vehicle.py}{287} --- the literal string \texttt{'ArduCopter.elf',}.
+  \item \citerange{Tools/autotest/sim_vehicle.py}{1073}{1085} --- option-parser block for \texttt{-v}/\texttt{--vehicle} and \texttt{-f}/\texttt{--frame}.
+\end{itemize}
+
+\textbf{Lab L1 --- ``First SITL launch.''}
+\begin{enumerate}
+  \item \texttt{Tools/environment\_install/install-prereqs-ubuntu.sh} (Ubuntu).
+  \item \texttt{git clone --recurse-submodules https://github.com/ArduPilot/ardupilot.git \&\& cd ardupilot}
+  \item \texttt{./waf configure --board sitl} \quad then \quad \texttt{./waf copter}
+  \item \texttt{Tools/autotest/sim\_vehicle.py -v ArduCopter --console --map}
+\end{enumerate}
+\textbf{Pass criterion:} a \texttt{HEARTBEAT} arrives at the GCS, the map renders the vehicle, the console prints \texttt{STATUSTEXT: APM:Copter \dots} and \texttt{online system 1} within $\sim$30 s.
+
+\textbf{If apt cascades errors across unrelated packages on a fresh Ubuntu:} the configured mirror is almost always stale, not the script. Raise your hand --- the TA will diagnose with \texttt{apt-cache madison <pkg>} and switch \codepath{/etc/apt/sources.list.d/ubuntu.sources} to \codepath{archive.ubuntu.com} if the configured mirror is behind.
+
+\textbf{The MAVProxy commands used in this course} (and only these):
+\begin{itemize}
+  \item \texttt{mode <NAME>}, \texttt{arm throttle}, \texttt{rc 3 1700},
+  \item \texttt{param show <NAME>}, \texttt{param set <NAME> <VALUE>}.
+\end{itemize}
+
+\instfaq{Build fails on a fresh Ubuntu 26.04 with cascading apt errors.}{Stale mirror, not the script. Verify with \texttt{apt-cache madison <pkg>} vs \texttt{archive.ubuntu.com}, then switch the mirror.}
+
+\subsection{Module 1.3 --- Your first flight: arm, take off, land, disarm (45 min, lab, \emph{applied})}
+
+\textbf{The mode you start in: STABILIZE.} Levels you when sticks released. Throttle goes straight through to motor thrust. \emph{No} altitude or position hold. The closest copter mode to manual flight.
+
+\textbf{Code-reading:}
+\begin{itemize}
+  \item \citerange{ArduCopter/mode.h}{77}{109} --- master enum: \flmode{STABILIZE} = 0, \flmode{ALT\_HOLD} = 2, \flmode{LAND} = 9. Recognise the shape, do not memorise.
+  \item \citerange{ArduCopter/mode_stabilize.cpp}{9}{64} --- \texttt{ModeStabilize::run}. Read the comment: \emph{``stabilize\_run --- runs the main stabilize controller; should be called at 100hz or more.''} The body is a small state machine; the comment is enough for survey depth.
+\end{itemize}
+\instnote{Do not unpack the spool-state \texttt{switch} in \texttt{ModeStabilize::run}. Survey depth.}
+
+\textbf{Lab L2 --- ``First flight (STAB $\rightarrow$ LAND).''}
+\begin{enumerate}
+  \item \texttt{mode STABILIZE}, \texttt{arm throttle}, \texttt{rc 3 1700}.
+  \item Wait altitude $> 10$~m.
+  \item \texttt{mode LAND}, wait \texttt{Disarming motors}.
+\end{enumerate}
+\textbf{Pass criterion:} \texttt{Disarming motors} statustext within 90 s of \texttt{arm throttle}.
+
+\subsection{Module 1.4 --- Flight modes from a pilot's view (45 min, \emph{survey})}
+
+\textbf{Three-bucket taxonomy} (verbatim --- use this, not the historical \texttt{mode.h} order):
+\begin{itemize}
+  \item \textbf{Manual} --- \flmode{STABILIZE}, \flmode{ACRO}. Sticks $\approx$ motor outputs. Letting go $\Rightarrow$ vehicle drifts.
+  \item \textbf{Stabilized-with-altitude} --- \flmode{ALT\_HOLD}. Autopilot holds altitude; pilot still flies horizontally.
+  \item \textbf{Autonomous} --- \flmode{AUTO}, \flmode{GUIDED}, \flmode{RTL}, \flmode{LAND}. Autopilot decides.
+\end{itemize}
+\flmode{LOITER} is intentionally \emph{not} on this course's mode tour.
+
+\textbf{init / run pattern} (shared by every mode):
+\begin{itemize}
+  \item \citerange{ArduCopter/mode_althold.cpp}{9}{22} --- \texttt{ModeAltHold::init}: ``initialise althold controller.'' Called once on entry. Hands speed/accel limits to its controller.
+  \item \citerange{ArduCopter/mode_althold.cpp}{26}{104} --- \texttt{ModeAltHold::run}. Survey: state-machine names \texttt{MotorStopped}, \texttt{Landed\_Pre\_Takeoff}, \texttt{Takeoff}, \texttt{Flying}. Each branch decides differently what to do with the pilot's stick.
+\end{itemize}
+\instnote{Do not unpack the algebra inside any branch of \texttt{ModeAltHold::run}. Survey depth; redirect to the GNC course if a student starts solving.}
+
+\textbf{Mode switching can be refused:}
+\begin{itemize}
+  \item \citerange{ArduCopter/mode.cpp}{313}{396} --- \texttt{Copter::set\_mode}.
+  \item \citeline{ArduCopter/mode.cpp}{394} --- \texttt{mode\_change\_failed(\dots, "requires position");}
+  \item \citeline{ArduCopter/mode.cpp}{404} --- \texttt{mode\_change\_failed(\dots, "need alt estimate");}
+\end{itemize}
+The autopilot prefers to refuse than to be wrong.
+
+\textbf{In-module demo:} \texttt{param set SIM\_GPS\_DISABLE 1; mode RTL} $\rightarrow$ refused. Then \texttt{param set SIM\_GPS\_DISABLE 0} to restore.
+
+\instadvanced{\flmode{LOITER}, \flmode{POSHOLD}, and the position-hold family are covered in detail by \siblingplane\ Day 2 and \siblingquadplane\ Day 3.}
+
+\subsection{Module 1.5 --- Parameters (30 min, \emph{applied})}
+
+A parameter is a named, persistent runtime-configurable value. \textbf{Not} compiled in --- read from non-volatile storage at boot.
+
+\textbf{The \texttt{@Param} annotation block:}
+\begin{itemize}
+  \item \citerange{ArduCopter/Parameters.cpp}{44}{51} --- the eight lines that declare \texttt{PILOT\_THR\_FILT}: seven \texttt{// @...} comment lines plus \texttt{GSCALAR(...)}. Recognise: \texttt{@Param} (16-char name cap), \texttt{@DisplayName}, \texttt{@Description}, \texttt{@Range}/\texttt{@Values}, \texttt{@Units}, \texttt{@User}.
+\end{itemize}
+
+\textbf{A real parameter table:}
+\begin{itemize}
+  \item \citerange{ArduCopter/Parameters.cpp}{33}{67} --- start of \texttt{Copter::var\_info[]}: \param{FORMAT\_VERSION}, \param{PILOT\_THR\_FILT}, \param{PILOT\_THR\_BHV}, \param{GCS\_PID\_MASK}. Recognise the \texttt{GSCALAR(\dots)} macro.
+  \item \citerange{ArduCopter/Parameters.cpp}{149}{191} --- \param{FLTMODE1}--\param{FLTMODE6} and \param{FLTMODE\_CH}. PWM band $\rightarrow$ flight-mode number.
+\end{itemize}
+
+\textbf{In-module hands-on:}
+\begin{enumerate}
+  \item \texttt{param show SIM\_WIND\_SPD} (default 0).
+  \item \texttt{param set SIM\_WIND\_SPD 5} --- watch hover wobble.
+  \item \texttt{param set SIM\_WIND\_SPD 0} --- restore.
+\end{enumerate}
+
+\hrule\bigskip
+\section{Day 2 --- Under the hood: sensors, scheduler, data path, failsafes, closing lab}
+
+\subsection*{Day 2 goal}
+By the end of Day 2, you can read (not write) the call path from sensor reading $\rightarrow$ scheduler tick $\rightarrow$ mode \texttt{run()} $\rightarrow$ PID $\rightarrow$ motor output, name what the EKF is for without solving any equations, and have run a SITL flight in which an injected GPS failure triggered the EKF failsafe.
+
+\subsection{Module 2.1 --- Sensors and the scheduler (45 min, \emph{survey})}
+
+\textbf{Sensors, one sentence each:}
+\begin{itemize}
+  \item \textbf{IMU} --- accel + gyro. Sampled fastest.
+  \item \textbf{Barometer} --- pressure $\Rightarrow$ altitude.
+  \item \textbf{Magnetometer} --- field $\Rightarrow$ heading.
+  \item \textbf{GPS} --- global position + ground velocity.
+\end{itemize}
+The \emph{estimator} fuses these into one trusted answer for ``where am I, how fast am I going, which way am I pointing.'' Estimator $=$ EKF. Black box here.
+
+\textbf{The scheduler is one list, run forever:}
+\begin{itemize}
+  \item \citerange{ArduCopter/Copter.cpp}{113}{149} --- \texttt{Copter::scheduler\_tasks[]} opening. \texttt{FAST\_TASK} every loop, \texttt{SCHED\_TASK} rate-limited.
+  \item \citeline{ArduCopter/Copter.cpp}{117} --- \texttt{FAST\_TASK(run\_rate\_controller\_main),}.
+  \item \citeline{ArduCopter/Copter.cpp}{126} --- comment \texttt{// run EKF state estimator (expensive)}.
+  \item \citeline{ArduCopter/Copter.cpp}{127} --- \texttt{FAST\_TASK(read\_AHRS),} (this runs the EKF).
+  \item \citerange{ArduCopter/Copter.cpp}{151}{201} --- selected \texttt{SCHED\_TASK} entries. Different rates for different freshness.
+  \item \citeline{ArduCopter/Copter.cpp}{201} --- \texttt{SCHED\_TASK(ekf\_check, 10, 75, 84),} (10~Hz).
+\end{itemize}
+
+\textbf{One line of \texttt{main()}:} \citeline{ArduCopter/Copter.cpp}{998} --- \texttt{AP\_HAL\_MAIN\_CALLBACKS(\&copter);}. Macro at \citerange{libraries/AP_HAL/AP_HAL_Main.h}{35}{41}.
+
+\textbf{The main loop:} \citerange{libraries/AP_Vehicle/AP_Vehicle.cpp}{558}{566}. Line 561: \texttt{scheduler.loop();}. The autopilot's main loop does literally one thing.
+
+\textbf{Hands-on:} \texttt{param show SCHED\_LOOP\_RATE} $\rightarrow$ 400~Hz. Optionally \texttt{grep -c SCHED\_TASK ArduCopter/Copter.cpp}.
+
+\subsection{Module 2.2 --- From stick input to motor output: the data path (45 min, \emph{survey} + 1 \emph{applied})}
+
+\textbf{Memorise this sentence:}
+\begin{quote}
+  Stick $\rightarrow$ mode \texttt{run()} $\rightarrow$ attitude controller $\rightarrow$ rate controller $\rightarrow$ PID $\rightarrow$ motor mixer $\rightarrow$ ESC.
+\end{quote}
+
+\textbf{Stage 3 (the only \emph{applied} cite):}
+\begin{itemize}
+  \item \citeline{ArduCopter/Copter.cpp}{117} --- the \texttt{FAST\_TASK} entry.
+  \item \citerange{ArduCopter/Attitude.cpp}{10}{24} --- \texttt{run\_rate\_controller\_main}: sets \texttt{dt}, calls \texttt{rate\_controller\_run()}.
+  \item \citerange{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{457}{485} --- \texttt{rate\_controller\_run\_dt}. Three PIDs, one per axis:
+  \begin{itemize}
+    \item \citeline{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{473} --- roll.
+    \item \citeline{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{476} --- pitch.
+    \item \citeline{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{479} --- yaw.
+  \end{itemize}
+  Inputs: target angular velocity, gyro reading, \texttt{dt}.
+\end{itemize}
+
+\textbf{Stage 4 --- PID, as a black box:} \citerange{libraries/AC_PID/AC_PID.cpp}{196}{272} --- \texttt{AC\_PID::update\_all}. Identify \texttt{float P\_out = (\_error * \_kp);} and stop. PID is ``compute an error, multiply by P, add the integral, add the derivative, output.''
+
+\textbf{Stage 5 --- motor mixer:} \citerange{libraries/AP_Motors/AP_MotorsMatrix.cpp}{213}{244} --- \texttt{output\_armed\_stabilizing} opening. Takes 4 numbers; decides how hard each of 4 motors pushes.
+
+\textbf{Why the X-frame angles:} \citerange{libraries/AP_Motors/AP_MotorsMatrix.cpp}{592}{602} --- the \texttt{MOTOR\_FRAME\_TYPE\_X} branch. Motors at $+45^\circ, -135^\circ, -45^\circ, +135^\circ$, alternating CCW/CW. The CCW/CW alternation cancels prop torque; that is what lets a quadrotor yaw at all.
+
+\subsection{Module 2.3 --- Why does the autopilot ever decide for itself? Failsafes (45 min, \emph{applied})}
+
+\textbf{Four failsafes:} RC loss, battery, GCS link loss, \textbf{EKF variance} (the closing lab triggers this one).
+
+\textbf{The EKF failsafe code path:}
+\begin{itemize}
+  \item \citerange{ArduCopter/ekf_check.cpp}{30}{90} --- \texttt{Copter::ekf\_check} (10~Hz).
+  \item Names: \texttt{ekf\_check\_state.fail\_count}, \texttt{ekf\_check\_state.bad\_variance}, \texttt{g.fs\_ekf\_thresh} ($=$ \param{FS\_EKF\_THRESH}), \texttt{EKF\_CHECK\_ITERATIONS\_MAX}.
+  \item \citeline{ArduCopter/ekf_check.cpp}{83} --- \texttt{LOGGER\_WRITE\_ERROR(EKFCHECK, BAD\_VARIANCE);} (the dataflash row to read out).
+  \item \citeline{ArduCopter/ekf_check.cpp}{86} --- \texttt{gcs().send\_text(MAV\_SEVERITY\_CRITICAL, "EKF variance: \%s", \dots);} (the live statustext).
+  \item \citeline{ArduCopter/ekf_check.cpp}{89} --- \texttt{failsafe\_ekf\_event();} (the action).
+\end{itemize}
+
+\textbf{Pre-arm checks --- same posture before take-off:} \citerange{ArduCopter/AP_Arming_Copter.cpp}{8}{20}. \texttt{run\_pre\_arm\_checks} starts with ``exit immediately if already armed.'' Same code-base personality: refuse than be wrong.
+
+\subsection{Module 2.4 --- Closing lab: scripted flight + forced EKF failsafe (1.25 h, \emph{applied})}
+
+\textbf{Reference fingerprint:} \citerange{ArduCopter/ekf_check.cpp}{79}{89} --- the inner block that fires when \texttt{fail\_count >= EKF\_CHECK\_ITERATIONS\_MAX}.
+
+\textbf{Step A --- clean run ($\sim$25 min):}
+\begin{verbatim}
+  arm throttle
+  mode GUIDED
+  takeoff 30
+  (hover 30 s)
+  mode RTL
+  (wait disarm)
+\end{verbatim}
+Pass: disarmed within 180 s; no \texttt{CRITICAL} statustext.
+
+\textbf{Step B --- failsafe injection ($\sim$50 min):} same prefix, then at t = 60 s after \texttt{arm throttle}:
+\begin{verbatim}
+  param set SIM_GPS_DISABLE 1
+\end{verbatim}
+Pass criteria (all four required):
+\begin{enumerate}
+  \item \texttt{STATUSTEXT} severity \texttt{CRITICAL}, text starts \texttt{EKF variance:}, within 30 s of injection.
+  \item Mode change to \flmode{LAND} or \flmode{RTL} within 30 s of injection.
+  \item \texttt{Disarming motors} within 240 s of original arm.
+  \item Dataflash \texttt{ERR} row with \texttt{Subsys = EKFCHECK}, \texttt{ECode = BAD\_VARIANCE} (read via \texttt{mavlogdump.py --types ERR}).
+\end{enumerate}
+
+\textbf{Deliverable} (record on paper or in a text file):
+\begin{enumerate}
+  \item The MAVProxy statustext at the moment of failure.
+  \item The final mode the vehicle was in at disarm.
+  \item The dataflash \texttt{ERR} row.
+\end{enumerate}
+
+\hrule\bigskip
+\section*{What you have not been taught (deliberate gaps)}
+On the way to \siblingquadplane\ or \siblingplane\ you will meet these as new material:
+\begin{itemize}
+  \item \textbf{Missions} --- \texttt{MAV\_CMD\_NAV\_*}, \texttt{wp load}, \flmode{AUTO}.
+  \item \textbf{The autotest framework} --- \codepath{Tools/autotest/autotest.py}.
+  \item \textbf{ArduPilot code conventions} --- \texttt{AP\_HAL::millis()}, \texttt{is\_zero()}, \texttt{GCS\_SEND\_TEXT()}, snake\_case methods, \texttt{AP\_}/\texttt{AC\_}/\texttt{AR\_} class prefixes.
+  \item \texttt{AP\_<FEATURE>\_ENABLED} compile-time flags.
+\end{itemize}
+
+\hrule\bigskip
+\noindent\footnotesize Generated from the course markdown at \citefile{course/intro_arducopter_aero_y1.md}, which is in turn generated from \codepath{course/plans/plan-intro-arducopter-aero-y1-iter2.md}. Codebase pin: branch \texttt{GNC-0.1}, head \texttt{a6fc842e04}, 2026-04-26.
+
+\end{document}

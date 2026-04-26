@@ -1,0 +1,18 @@
+# Lab L3 — parameter overrides
+# These are loaded at the start of the lab session via:
+#   param load course/labs/intro-arducopter-aero-y1/l3-closing-lab/params.parm
+#
+# FS_EKF_ACTION 1 — EKF failsafe action = LAND (default; confirmed in
+#   ArduCopter/config.h:103: FS_EKF_ACTION_DEFAULT = FS_EKF_Action::LAND)
+#   Value 1 = LAND. Explicitly set here so the lab is reproducible.
+FS_EKF_ACTION 1
+#
+# FS_EKF_THRESH 0.8 — EKF failsafe variance threshold (default = 0.8).
+#   Set explicitly so the lab document records the exact threshold the
+#   student will observe. Defined in ArduCopter/config.h:106.
+FS_EKF_THRESH 0.8
+#
+# SIM_GPS1_ENABLE 1 — GPS enabled at start of lab.
+#   The orchestrator sets this to 0 in Step B at t+60s.
+#   Verified in libraries/SITL/SIM_GPS.cpp:42 (AP_GROUPINFO_FLAGS "ENABLE", 1, ...).
+SIM_GPS1_ENABLE 1

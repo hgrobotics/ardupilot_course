@@ -1,0 +1,388 @@
+% lab-guides/l2-first-flight.tex
+% Single source for Lab L2 student + instructor PDFs. Gated by version-flags.tex.
+
+\documentclass[a4paper,11pt,twoside]{article}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, margin=2.2cm]{geometry}
+\usepackage{titling}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\setlist[enumerate]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  pdftitle={Lab L2 --- First Flight (STABILIZE to LAND)},
+}
+\usepackage{url}
+\usepackage{fancyvrb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+\usepackage{array}
+\usepackage{longtable}
+
+\input{../shared/macros.tex}
+
+\renewcommand{\instnote}[1]{\ifinstructor\begin{tcolorbox}[colback=blue!4!white,colframe=blue!40!black,title=Instructor note,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\insttiming}[1]{\ifinstructor\begin{tcolorbox}[colback=orange!5!white,colframe=orange!50!black,title=Pacing,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\instfaq}[2]{\ifinstructor\begin{tcolorbox}[colback=green!4!white,colframe=green!40!black,title=Anticipated Q: #1,breakable]#2\end{tcolorbox}\fi}
+\renewcommand{\instadvanced}[1]{\ifinstructor\begin{tcolorbox}[colback=violet!5!white,colframe=violet!50!black,title=Advanced material pointer,breakable]#1\end{tcolorbox}\fi}
+
+\title{Lab L2 --- First Flight (STABILIZE $\rightarrow$ LAND)\\
+  \large \ifinstructor Instructor Guide\else Student Guide\fi}
+\author{\copyrightline}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Codebase reference:} branch \texttt{GNC-0.1} of \href{\repourl}{\nolinkurl{hgrobotics/ardupilot_course}}. Every source-code link in this lab guide opens the cited file at the named line on GitHub.
+
+\bigskip
+
+\ifinstructor
+% =============================================================================
+% INSTRUCTOR EDITION
+% =============================================================================
+
+\begin{tcolorbox}[colback=red!5!white,colframe=red!40!black,title=Instructor edition]
+This is the instructor edition. Do \textbf{not} hand this to students --- the student edition is the same source compiled without the instructor flag.
+\end{tcolorbox}
+
+\section*{Lab summary for the instructor}
+
+\textbf{What the student is supposed to learn:} the complete arm-to-disarm lifecycle from the operator's perspective: how to arm in STABILIZE mode, how throttle RC override produces a climb, how to switch to LAND, and how to read the disarm confirmation in the GCS console. The student also encounters, briefly, the concept that some mode changes require a position estimate --- a seed that Lab L3 grows into the full EKF failsafe sequence.
+
+\textbf{Depth marker:} \emph{applied}. Students drive the vehicle manually via MAVProxy RC overrides and observe real GCS statustext messages. They are NOT expected to read the STABILIZE mode source at this stage. The arming check source (\citerange{ArduCopter/AP_Arming_Copter.cpp}{8}{20}) and the mode-change refusal path (\citerange{ArduCopter/mode.cpp}{313}{396}) are introduced in Module 1.3 at survey depth only. Do not walk the code bodies here --- that is Module 2.3's job.
+
+\textbf{Important implementation divergence --- STABILIZE vs GUIDED in the automated test}
+
+The student-facing recipe in \texttt{steps.md} uses STABILIZE mode with \texttt{rc 3 1700} (manual throttle). The automated harness (\texttt{test.py}) uses GUIDED mode and \texttt{MAV\_CMD\_NAV\_TAKEOFF}. This divergence is intentional and is documented in \texttt{test.py}'s module docstring: in bare SITL with a fixed RC throttle override, STABILIZE produces motor spin but not a reliable sustained climb because there is no altitude-hold logic. GUIDED + NAV\_TAKEOFF is the only scriptable path that reliably produces \texttt{GLOBAL\_POSITION\_INT.relative\_alt > 10~m} in headless testing.
+
+When a TA asks why the test harness uses GUIDED while the student guide says STABILIZE, the correct answer is: the student recipe teaches manual throttle control, which requires a human watching the console; the test harness uses a scriptable command that does not require human intervention. Both paths confirm the arm-to-land-to-disarm lifecycle.
+
+\textbf{How this lab feeds later modules:} Lab L3 (the capstone) uses GUIDED + \texttt{MAV\_CMD\_NAV\_TAKEOFF} directly, mirroring the automated test path. Students who have completed L2 understand what ``arm, take off, land, disarm'' looks like as GCS events; L3 adds the fault injection and log-inspection payload on top of that baseline.
+
+\textbf{Downstream course connection:} the downstream GNC plane and quadplane courses assume that students can read \texttt{STATUSTEXT}, interpret mode changes, and understand that LAND mode is an autonomous descending mode. L2 establishes all three. The \texttt{ARSPD\_FBW\_MIN}, \texttt{Q\_TRANSITION\_MS}, and EKF3 lane-switch concepts in the downstream courses are new; the GCS-side event vocabulary is not.
+
+\section*{Pacing}
+
+The headless agent test runs in approximately 15--20 seconds wall-clock at \texttt{--speedup 10}. Student-facing budget:
+
+\begin{center}\small
+\begin{tabular}{|p{5.5cm}|p{3.0cm}|p{6.0cm}|}\hline
+\textbf{Step} & \textbf{Wall-clock time} & \textbf{Notes} \\ \hline
+Pre-condition check + SITL launch & 2--3 min & Reuse L1 SITL session if still running. \\ \hline
+Step 1 --- STABILIZE mode & $<1$ min & Mode change is instantaneous. \\ \hline
+Step 2 --- Arm & 1--3 min & May need to wait for EKF alignment. Budget extra if EKF is slow. \\ \hline
+Step 3 --- Climb to 10~m & 1--2 min & At \texttt{rc 3 1700}, climb rate is $\sim$2--3~m/s in STABILIZE. \\ \hline
+Step 4 --- Return throttle & $<1$ min & \\ \hline
+Step 5 --- Switch to LAND & $<1$ min & \\ \hline
+Step 6 --- Wait for disarm & 3--5 min & Depends on altitude at LAND command; budget 5~min. \\ \hline
+Step 7 --- Record & 2 min & \\ \hline
+Step 8 --- Optional GPS disable & 3--5 min & Skip if class is running late. \\ \hline
+Step 9 --- Exit & $<1$ min & \\ \hline
+\end{tabular}
+\end{center}
+
+\textbf{Total:} $\sim$15 min typical; 20 min budgeted.
+
+The automated test's \texttt{LAND\_DISARM\_TIMEOUT} is 90 seconds from arm, which at \texttt{--speedup 10} is 9 seconds wall-clock. The student-facing 90-second limit is in real time and is generous --- typical disarm from a 10--15~m altitude is well under 45 seconds.
+
+\section*{Pre-arm setup checklist}
+
+Before students start:
+\begin{itemize}[label={[ ]}]
+  \item Lab L1 completed and verified (SITL launches and shows \texttt{online system 1} on each machine).
+  \item Confirm SITL is running with MAVProxy connected. If reusing L1's session, confirm mode is \texttt{STABILIZE} and vehicle is disarmed.
+  \item Confirm MAVProxy command terminal is focused (not the console window). Students type commands in the terminal, not the console.
+  \item Remind students: \texttt{rc 3 1700} sends a throttle override. \texttt{rc 3 1500} is mid-stick (hover). \texttt{rc 3 1000} is throttle-off. In STABILIZE the vehicle will descend at \texttt{rc 3 1400} and fall out of the sky at \texttt{rc 3 1000} --- tell students to switch to LAND instead of cutting throttle.
+  \item Warn students: if they issue \texttt{param set SIM\_GPS1\_ENABLE 0} while airborne and armed (Step 8 variant), the EKF failsafe will fire and the vehicle will enter LAND mode autonomously. This is expected and is the preview of Lab L3.
+\end{itemize}
+
+\section*{Common student failures and what to say}
+
+\textbf{Exit code 3 from \texttt{test.py} --- vehicle did not arm within 30~s}
+
+Diagnostic: \texttt{ps aux | grep arducopter} --- check the SITL process is alive. Check that the EKF alignment messages appeared.
+
+What to say: ``The EKF is still initialising or the arm command was rejected. Watch for \texttt{EKF2 IMU0 initial yaw alignment complete} in the console, then retry \texttt{arm throttle}.''
+
+\textbf{Exit code 4 from \texttt{test.py} --- altitude never exceeded 10~m within 30~s}
+
+In the automated test this means the NAV\_TAKEOFF command was not executed correctly. In the student path this means \texttt{rc 3 1700} did not produce enough climb. Check that the vehicle is actually armed and that STABILIZE mode is confirmed.
+
+What to say: ``Confirm the \texttt{ARMED} message appeared and mode is \texttt{STABILIZE}. Then re-send \texttt{rc 3 1700} and watch the \texttt{Alt} reading.''
+
+\textbf{Exit code 5 from \texttt{test.py} --- vehicle not disarmed within 90~s of arm}
+
+Either the LAND mode switch was not issued, or the altitude at switch was so high that the 90-second clock expired before touchdown.
+
+What to say: ``Issue \texttt{mode LAND} sooner, or from a lower altitude. The automated test uses a 90-second window from arm; the vehicle needs enough time to descend.''
+
+\textbf{\texttt{ARMED} appears but vehicle does not climb}
+
+The throttle override command was not sent, or was sent at too low a value. Confirm \texttt{rc 3 1700} was typed in the MAVProxy terminal (not the console window). Also confirm the vehicle is not in a GUIDED or ALT\_HOLD mode --- those modes ignore RC channel 3 overrides differently.
+
+\textbf{\texttt{Mode change failed: requires position} on \texttt{mode LAND}}
+
+LAND does not require a position estimate; it only requires an altitude estimate. This message should not appear for LAND. If it does, the SITL environment is degraded (possibly a parameter from a previous session). Restart SITL with \texttt{-w} (wipe EEPROM).
+
+\textbf{Student accidentally cuts throttle to 1000~$\mu$s and the vehicle crashes}
+
+This is recoverable in SITL --- restart SITL with the launch script. Explain that on real hardware, cutting throttle mid-flight is fatal. LAND mode is always the right way to stop the flight.
+
+\section*{Verdict signatures}
+
+The automated harness checks this sequence (see \texttt{test.py} exit codes):
+
+\begin{center}\small
+\begin{tabular}{|c|p{4.0cm}|p{8.0cm}|}\hline
+\textbf{Code} & \textbf{Meaning} & \textbf{Primary signal} \\ \hline
+\texttt{0} & PASS --- full sequence & HEARTBEAT \texttt{base\_mode \& MAV\_MODE\_FLAG\_SAFETY\_ARMED} clears after LAND \\ \hline
+\texttt{1} & FAIL --- no heartbeat & \texttt{mav.wait\_heartbeat()} timeout \\ \hline
+\texttt{2} & FAIL --- mode change timeout & HEARTBEAT mode string did not match \\ \hline
+\texttt{3} & FAIL --- arm timeout & HEARTBEAT \texttt{SAFETY\_ARMED} flag never set \\ \hline
+\texttt{4} & FAIL --- altitude not reached & \texttt{GLOBAL\_POSITION\_INT.relative\_alt} $<10\,000$~mm (10~m) \\ \hline
+\texttt{5} & FAIL --- disarm timeout & HEARTBEAT \texttt{SAFETY\_ARMED} still set after 90~s from arm \\ \hline
+\texttt{6} & FAIL --- EKF not healthy & \texttt{EKF\_STATUS\_REPORT} health conditions not met within 60~s \\ \hline
+\texttt{10} & FAIL --- connection or binary error & TCP connection refused or import error \\ \hline
+\end{tabular}
+\end{center}
+
+GCS STATUSTEXT sequence (manual student path):
+
+\begin{center}\small
+\begin{tabular}{|p{5.5cm}|p{2.5cm}|p{6.5cm}|}\hline
+\textbf{Text} & \textbf{Severity} & \textbf{When} \\ \hline
+\texttt{Flight mode change successful} & INFO & After \texttt{mode STABILIZE} \\ \hline
+\texttt{ARMED} & EMERGENCY & After \texttt{arm throttle} \\ \hline
+\texttt{Flight mode change successful} & INFO & After \texttt{mode LAND} \\ \hline
+\texttt{LAND complete} & INFO & After touchdown \\ \hline
+\texttt{Disarming motors} & INFO & After auto-disarm \\ \hline
+\end{tabular}
+\end{center}
+
+For Step 8 (optional mode rejection):
+
+\begin{center}\small
+\begin{tabular}{|p{5.5cm}|p{2.0cm}|p{7.0cm}|}\hline
+\textbf{Text} & \textbf{Severity} & \textbf{Condition} \\ \hline
+\texttt{Mode change failed: requires position} & WARNING & \texttt{mode RTL} with \texttt{SIM\_GPS1\_ENABLE 0} \\ \hline
+\end{tabular}
+\end{center}
+
+Source: \citeline{ArduCopter/mode.cpp}{394} --- \texttt{mode\_change\_failed(new\_flightmode, "requires position")}.
+
+\section*{Pointers to advanced material}
+
+\begin{itemize}
+  \item The mode-change refusal logic at \citerange{ArduCopter/mode.cpp}{313}{396} is walked at \emph{applied} depth in Module 1.3 and \emph{applied} depth again in Module 1.4 (mode tour). The downstream GNC plane course revisits this path for quadplane transition-mode refusals.
+  \item The STABILIZE mode run loop at \citerange{ArduCopter/mode_stabilize.cpp}{9}{64} explains why throttle is a direct pass-through (no altitude hold). Students who ask ``why doesn't the vehicle hold altitude in STABILIZE?'' can be pointed here --- but this is Module 2.2 material (stick-to-ESC data path), not a L2 discussion.
+  \item The automated test's GUIDED + NAV\_TAKEOFF path (see \texttt{test.py}) is the same pattern used in the Lab L3 orchestrator and in the downstream GNC courses' scripted test flights. Students who are curious about how automated testing works can read \texttt{test.py} directly.
+  \item The EKF healthy check in \texttt{test.py} (waiting for \texttt{EKF\_STATUS\_REPORT} with \texttt{EKF\_POS\_HORIZ\_ABS} set) is the same pattern used in \texttt{run\_lab.py} for Lab L3 and in the downstream course's quadplane transition-readiness checks.
+\end{itemize}
+
+\else
+% =============================================================================
+% STUDENT EDITION
+% =============================================================================
+
+\section*{What you will do}
+
+In this lab you will fly a simulated quadrotor through the most basic sequence a pilot ever runs: arm the motors, climb to altitude, switch to LAND mode, and watch the autopilot bring the vehicle down and disarm itself. You will drive the vehicle manually in STABILIZE mode using MAVProxy RC override commands --- no autonomous logic is doing the flying for you. By the end you will have seen every event in the flight lifecycle from the GCS side: arming, mode changes, altitude climbing, the LAND descent, and the \texttt{Disarming motors} confirmation that closes the loop.
+
+\section*{Before you start}
+
+\textbf{Previous labs required:} Lab L1 must be complete. That means \texttt{sim\_vehicle.py} launches successfully and prints \texttt{online system 1} within 30 seconds on your machine.
+
+\textbf{What must be running:} SITL must be running and connected to MAVProxy. Use the L2 launch script or the same \texttt{sim\_vehicle.py} command from L1. The MAVProxy command terminal must be open.
+
+\textbf{What you should have confirmed in L1:}
+\begin{itemize}
+  \item SITL binary at \texttt{build/sitl/bin/arducopter} exists.
+  \item \texttt{mavproxy.py} is on your PATH.
+  \item The MAVProxy console, terminal, and map windows all open.
+\end{itemize}
+
+\textbf{No hardware required.}
+
+\section*{The steps}
+
+\textbf{Total estimated time:} 20 minutes.\\
+\textbf{Goal:} arm, take off to above 10~m, switch to LAND, confirm disarm.
+
+\subsection*{Pre-conditions}
+\begin{itemize}
+  \item SITL is running (use L2 \texttt{launch.sh} or the L1 invocation).
+  \item MAVProxy shows \texttt{online system 1} and mode \texttt{STABILIZE}.
+\end{itemize}
+
+\subsection*{Step 1 --- Switch to STABILIZE mode}
+
+In the MAVProxy command terminal, type:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+mode STABILIZE
+\end{Verbatim}
+
+\textbf{Expected:} Console shows \texttt{Mode:STABILIZE} and statustext \texttt{Flight mode change successful}.
+
+\subsection*{Step 2 --- Arm the vehicle}
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+arm throttle
+\end{Verbatim}
+
+\textbf{Expected:} Console shows \texttt{Armed} and statustext \texttt{ARMED}. The motor sound (if audio enabled) starts.
+
+If the arm is rejected, you will see \texttt{PreArm: ...} statustext. In SITL this is rare with defaults. Wait a few seconds for EKF to initialise (the console shows \texttt{EKF2 IMU0 initial yaw alignment complete} and \texttt{EKF2 IMU1 initial yaw alignment complete}) then retry.
+
+\subsection*{Step 3 --- Climb above 10~m}
+
+Apply throttle to climb:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+rc 3 1700
+\end{Verbatim}
+
+This sets the throttle RC channel (channel 3) to 1700 microseconds, which is above mid-stick and causes the vehicle to climb.
+
+\textbf{Expected:} The altitude reading in the console increases. Watch for the altitude (labelled \texttt{Alt}) to pass 10~m.
+
+\textbf{Wait:} approximately 10 seconds for the vehicle to climb above 10~m.
+
+\subsection*{Step 4 --- Return throttle to hover}
+
+Once above 10~m, reduce throttle to hover level to stop climbing:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+rc 3 1500
+\end{Verbatim}
+
+In STABILIZE mode the vehicle will not hold altitude automatically --- it will drift. That is expected at this stage.
+
+\subsection*{Step 5 --- Switch to LAND mode}
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+mode LAND
+\end{Verbatim}
+
+\textbf{Expected:} Console shows \texttt{Mode:LAND} and statustext \texttt{Flight mode change successful}. The vehicle begins descending.
+
+\subsection*{Step 6 --- Wait for disarm}
+
+Watch the console. The vehicle descends, touches down, and disarms automatically.
+
+\textbf{Expected:} statustext \texttt{LAND complete} followed by \texttt{Disarming motors} within 90 seconds of the original \texttt{arm throttle} command.
+
+\textbf{Pass criterion:} \texttt{Disarming motors} must appear within 90 seconds of Step 2.
+
+\subsection*{Step 7 --- Record}
+
+Write down in your lab notebook:
+\begin{itemize}
+  \item The altitude at which you issued \texttt{mode LAND}.
+  \item The time (in seconds) from \texttt{arm throttle} to \texttt{Disarming motors}.
+\end{itemize}
+
+\subsection*{Step 8 --- Optional: observe mode rejection}
+
+While still disarmed (or re-arm if needed), try:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+mode RTL
+\end{Verbatim}
+
+With GPS working, this should succeed. Now disable GPS:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set SIM_GPS1_ENABLE 0
+\end{Verbatim}
+
+Attempt the mode switch again:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+mode RTL
+\end{Verbatim}
+
+\textbf{Expected:} statustext \texttt{Mode change failed: requires position}. This demonstrates that RTL requires a position estimate.
+
+Restore GPS before continuing:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set SIM_GPS1_ENABLE 1
+\end{Verbatim}
+
+\subsection*{Step 9 --- Exit SITL}
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+exit
+\end{Verbatim}
+
+\subsection*{Fault injection}
+
+None required in this lab. Step 8 is optional and is its own reversible observation, not a fault injection.
+
+\subsection*{Restoring state}
+
+After Step 8 (optional), always run:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set SIM_GPS1_ENABLE 1
+\end{Verbatim}
+
+to restore GPS before exiting or continuing.
+
+\section*{What success looks like}
+
+You have passed this lab when all of the following happen, in order:
+\begin{enumerate}
+  \item \texttt{arm throttle} is accepted --- the console shows \texttt{ARMED} and the vehicle is no longer disarmed.
+  \item \texttt{rc 3 1700} causes the altitude reading to climb above 10~m.
+  \item \texttt{mode LAND} is accepted --- the console shows \texttt{Mode:LAND}.
+  \item The vehicle descends, and the console shows \texttt{LAND complete}.
+  \item The console shows \texttt{Disarming motors} within 90 seconds of the moment you typed \texttt{arm throttle} in Step 2.
+  \item The final armed state shown in the console is \texttt{DISARMED}.
+\end{enumerate}
+
+If Step 8 (optional) was done: with \texttt{SIM\_GPS1\_ENABLE} at 0, the mode change to RTL prints \texttt{Mode change failed: requires position}. After \texttt{param set SIM\_GPS1\_ENABLE 1}, the mode change succeeds.
+
+\section*{Common mistakes and quick fixes}
+
+\textbf{1. \texttt{arm throttle} is rejected with \texttt{PreArm: ...}}
+
+The most common cause is that the EKF has not yet acquired a good position estimate. The console will show \texttt{EKF3 lane switch} or \texttt{EKF2 IMU0 initial yaw alignment} messages while it initialises. Wait until you see alignment-complete messages, then retry \texttt{arm throttle}.
+
+\textbf{2. Altitude does not increase after \texttt{rc 3 1700}}
+
+In STABILIZE mode, the throttle channel directly controls motor throttle. If the vehicle was just armed and the EKF is still initialising, the motors may not produce enough thrust to climb. Make sure \texttt{ARMED} appeared in the console before sending \texttt{rc 3 1700}. Also confirm SITL is running at normal speed, not paused.
+
+\textbf{3. \texttt{Disarming motors} does not appear within 90 seconds}
+
+The most likely cause is that you switched to LAND at a very high altitude and the vehicle is still descending when the 90-second window closes. Try again with a lower altitude (20~m is fine), or wait a little longer. The 90-second limit is the automated pass criterion; the vehicle will still land and disarm if you wait.
+
+\textbf{4. \texttt{mode LAND} produces \texttt{Mode change failed: ...}}
+
+Check that the vehicle is actually airborne and armed. If the vehicle is already on the ground and disarmed, LAND mode has nothing to do. Re-arm and climb before issuing \texttt{mode LAND}.
+
+\textbf{5. \texttt{param set SIM\_GPS1\_ENABLE 0} causes the vehicle to switch modes unexpectedly}
+
+If you run Step 8 while the vehicle is armed and airborne, the EKF failsafe may fire (this is the subject of Lab L3). For Step 8, make sure the vehicle is disarmed before disabling GPS.
+
+\section*{Where to go next}
+
+\textbf{Next lab:} Lab L3 --- Closing Lab --- scripted flight with a GPS fault injection and EKF failsafe observation.
+
+\textbf{Module reference:} this lab is the hands-on portion of \textbf{Module 1.3 --- Your first flight: arm, take off, land, disarm} in the course markdown at \citefile{course/intro_arducopter_aero_y1.md}.
+
+\textbf{Source reference:} the \texttt{Mode change failed: requires position} message you saw in Step 8 comes from \citeline{ArduCopter/mode.cpp}{394}. The mode number enum (\texttt{STABILIZE = 0}, \texttt{LAND = 9}) is at \citerange{ArduCopter/mode.h}{77}{109}.
+
+\fi
+
+\end{document}

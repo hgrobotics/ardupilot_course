@@ -1,0 +1,496 @@
+% slides/day2.tex
+% Day 2 — Under the hood: sensors, scheduler, PID-as-black-box, failsafes, closing lab (4 h)
+\documentclass[aspectratio=169,11pt]{beamer}
+
+\input{../shared/version-flags.tex}
+\input{../shared/preamble.tex}
+\input{../shared/macros.tex}
+
+\title{Introduction to ArduCopter\\\large Day 2 --- Under the hood: sensors, scheduler, data path, failsafes, closing lab}
+\subtitle{First-Year Aerospace Engineering On-Ramp}
+\date{4 h, in-lab}
+\author{}
+\institute{\copyrightline}
+
+\begin{document}
+
+%==============================================================================
+\begin{frame}
+  \titlepage
+  \ifinstructor
+    \footnotesize Instructor build. Speaker notes, FAQs, pacing, and advanced-course pointers are visible.
+  \fi
+\end{frame}
+
+\begin{frame}{What today gets you}
+  By the end of Day 2, every student can:
+  \begin{itemize}
+    \item Read (not write) the call path: sensor $\rightarrow$ scheduler $\rightarrow$ mode \texttt{run()} $\rightarrow$ PID $\rightarrow$ motor.
+    \item Name what the EKF is for, without solving any equations.
+    \item Run a SITL flight in which an injected GPS failure triggers the EKF failsafe \emph{and} identify the moment of failure in the dataflash log.
+  \end{itemize}
+  \vfill
+  Day 2 is concept-heavier than Day 1 by design. The closing lab carries the day's hands-on share.
+  \insttiming{Day 2 hands-on share is 41\%, almost all of it in Module 2.4. Modules 2.1--2.3 are read-the-source modules. Pace them carefully.}
+\end{frame}
+
+%==============================================================================
+\section{Module 2.1 --- Sensors and the scheduler (45 min, survey)}
+
+\begin{frame}{Module 2.1 --- Sensors and the scheduler: the heartbeat of the autopilot}
+  \textbf{45 min, lecture + demo, \emph{survey} depth.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Name the sensors --- IMU, baro, mag, GPS --- in one sentence each.
+    \item Define ``estimator'' as the thing that fuses noisy sensors into one trusted estimate.
+    \item Recognise that the EKF is the estimator. \textbf{No math.}
+    \item Define ``scheduler'' as a fixed list of \texttt{(function, rate, max\_micros)} tuples run forever.
+    \item Identify three landmark scheduler entries: IMU update, rate controller, EKF.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{The sensors --- one sentence each}
+  \begin{itemize}
+    \item \textbf{IMU} (Inertial Measurement Unit) --- accelerometers (linear acceleration, three axes) plus gyroscopes (angular rate, three axes). Sampled fastest. Everything downstream depends on it.
+    \item \textbf{Barometer} --- atmospheric pressure $\Rightarrow$ altitude estimate.
+    \item \textbf{Magnetometer (compass)} --- Earth's magnetic field $\Rightarrow$ heading estimate.
+    \item \textbf{GPS} --- global position and ground velocity.
+  \end{itemize}
+  You do not need to know how any of these work as physical devices.
+  \vfill
+  Library directories (open them in a file browser if curious; we will not cite line-by-line):
+  \codepath{libraries/AP\_InertialSensor/}, \codepath{libraries/AP\_Baro/}, \codepath{libraries/AP\_Compass/}, \codepath{libraries/AP\_GPS/}, \codepath{libraries/AP\_AHRS/}.
+\end{frame}
+
+\begin{frame}{The estimator --- and why it is the EKF}
+  All four sensors are noisy. The autopilot must turn them into one trusted answer for:\\
+  \emph{``where am I, how fast am I going, which way am I pointing.''}\\[1ex]
+  That job is the \textbf{estimator}.\\[1ex]
+  ArduPilot's estimator is an Extended Kalman Filter (EKF).\\[1ex]
+  \textbf{For this course the EKF is a black box.}\\
+  Sensors go in, an estimate comes out. We stop there.
+  \instadvanced{The downstream GNC courses go from zero to \texttt{errorScore()} and lane-switch internals. Reference \siblingplane\ Day 4 and \siblingquadplane\ Day 4. Do not anticipate them here.}
+\end{frame}
+
+\begin{frame}{The scheduler is one list, run forever}
+  \citerange{ArduCopter/Copter.cpp}{113}{149} --- start of \texttt{Copter::scheduler\_tasks[]}.\\[1ex]
+  Hard-coded array of every function the autopilot wants to run. Each entry is tagged either:
+  \begin{itemize}
+    \item \texttt{FAST\_TASK} --- run every main-loop iteration.
+    \item \texttt{SCHED\_TASK(func, rate\_hz, max\_us, prio)} --- run at a fixed rate.
+  \end{itemize}
+  The whole autopilot is, conceptually, ``iterate through this list forever.''
+\end{frame}
+
+\begin{frame}{The \texttt{FAST\_TASK} block --- three lines to notice}
+  \begin{itemize}
+    \item \citeline{ArduCopter/Copter.cpp}{117} --- \texttt{FAST\_TASK(run\_rate\_controller\_main),}\\
+      The rate controller runs every loop. We walk into it in Module 2.2.
+    \item \citeline{ArduCopter/Copter.cpp}{126} --- comment: \texttt{// run EKF state estimator (expensive)}.
+    \item \citeline{ArduCopter/Copter.cpp}{127} --- \texttt{FAST\_TASK(read\_AHRS),}\\
+      This call is what runs the EKF. Every loop iteration.\\
+      \emph{AHRS is the public interface; the EKF is the implementation behind it.}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{The \texttt{SCHED\_TASK} block --- different rates for different freshness}
+  \citerange{ArduCopter/Copter.cpp}{151}{201} --- rate-limited tasks. Notice the rates: 50 Hz, 10 Hz, 1 Hz.\\[1ex]
+  Different things run at different rates because they need different freshness:
+  \begin{itemize}
+    \item IMU sampled fast --- otherwise the controller flies blind.
+    \item EKF check (next slide) only needs to decide once every 100~ms.
+  \end{itemize}
+  \vfill
+  At \citeline{ArduCopter/Copter.cpp}{201}: \texttt{SCHED\_TASK(ekf\_check, 10, 75, 84),}\\
+  The 10~Hz monitor that triggers the EKF failsafe in Module 2.3 and the closing lab.\\[1ex]
+  Hold this entry. We come back to it.
+\end{frame}
+
+\begin{frame}{One line of \texttt{main()}}
+  \citeline{ArduCopter/Copter.cpp}{998} --- \texttt{AP\_HAL\_MAIN\_CALLBACKS(\&copter);}\\[1ex]
+  This single macro \emph{is} the entire ArduCopter binary's entry point.\\[1ex]
+  Macro definition: \citerange{libraries/AP_HAL/AP_HAL_Main.h}{35}{41}. Read but do not unpack.\\[1ex]
+  Survey shape:
+  \begin{quote}
+    \texttt{main()} is generated; it calls \texttt{hal.run()}; the scheduler does the rest.
+  \end{quote}
+\end{frame}
+
+\begin{frame}{The ``rest'' --- one line of the main loop}
+  \citerange{libraries/AP_Vehicle/AP_Vehicle.cpp}{558}{566} --- \texttt{AP\_Vehicle::loop()}.\\[1ex]
+  Notice line 561: \texttt{scheduler.loop();}\\[1ex]
+  The main loop of the autopilot does literally one thing: ask the scheduler for one iteration. Forever.
+  \vfill
+  \begin{center}\Large
+    sensors $\rightarrow$ scheduler tick $\rightarrow$ tasks $\rightarrow$ output
+  \end{center}
+  \vfill
+  This is the heartbeat.
+\end{frame}
+
+\begin{frame}{Module 2.1 hands-on --- watch the scheduler rate}
+  In the running SITL, type:
+  \begin{itemize}
+    \item[\texttt{>}] \texttt{param show SCHED\_LOOP\_RATE}
+  \end{itemize}
+  Confirm the value is \textbf{400} (Hz). That is the rate at which \texttt{FAST\_TASK}s run.\\[1ex]
+  Optionally, in your terminal:
+  \begin{itemize}
+    \item[\$] \texttt{grep -c SCHED\_TASK ArduCopter/Copter.cpp}
+  \end{itemize}
+  Notice how many rate-limited tasks the Copter scheduler manages.\\[1ex]
+  $\sim$5 min.
+\end{frame}
+
+%==============================================================================
+\section{Module 2.2 --- Stick to motor (45 min, survey + 1 applied)}
+
+\begin{frame}{Module 2.2 --- From stick input to motor output: the data path}
+  \textbf{45 min, lecture + demo, \emph{survey} with \emph{one applied} cite.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Sketch the call path verbatim. Memorise it.
+    \item Recognise PID is ``compute an error, multiply by P, add the integral, add the derivative, output.''
+    \item Read the X-frame motor angle table; understand why a quad X has motors at $+45^\circ / -135^\circ / -45^\circ / +135^\circ$.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{The verbatim sentence}
+  \begin{center}\Large
+    Stick $\rightarrow$ mode \texttt{run()} $\rightarrow$ attitude controller $\rightarrow$\\[0.3ex]
+    rate controller $\rightarrow$ PID $\rightarrow$ motor mixer $\rightarrow$ ESC.
+  \end{center}
+  \vfill
+  Every word stands for one stage that turns a pilot input into a motor command.\\[1ex]
+  This sentence is the single most-load-bearing handoff to the downstream GNC course. \textbf{Memorise it.}
+  \insttiming{Drill this sentence three times during the module. Cold-call random students.}
+\end{frame}
+
+\begin{frame}{Stage 1 --- mode \texttt{run()} reads sticks}
+  We saw this in Modules 1.3 and 1.4.\\[1ex]
+  The mode's \texttt{run()} function decides what \emph{target attitude} or \emph{thrust} the pilot is asking for.
+  \vfill
+  Output of stage 1: a desired attitude or angular rate.\\
+  Hand-off: to the attitude controller.
+\end{frame}
+
+\begin{frame}{Stage 2 --- attitude controller}
+  Mode \texttt{run()} calls into \texttt{attitude\_control->...}\\[1ex]
+  The attitude controller turns:
+  \begin{itemize}
+    \item Input: ``I want to be tilted 5\textdegree\ forward.''
+    \item Output: ``I need this much pitch \emph{rate} right now.''
+  \end{itemize}
+  \vfill
+  Hand-off: to the rate controller.
+  \instnote{Resist deepening. Survey at this layer; the GNC course unpacks the angle$\rightarrow$rate inner loop with full math.}
+\end{frame}
+
+\begin{frame}{Stage 3 --- rate controller, called every loop}
+  Re-cite: \citeline{ArduCopter/Copter.cpp}{117} --- \texttt{FAST\_TASK(run\_rate\_controller\_main)}.\\[1ex]
+  Body: \citerange{ArduCopter/Attitude.cpp}{10}{24}. Read it.\\
+  Notice it does almost nothing --- sets \texttt{dt}, then calls \texttt{attitude\_control->rate\_controller\_run()}.\\[1ex]
+  Actual rate-controller body:\\
+  \citerange{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{457}{485} --- \texttt{rate\_controller\_run\_dt}.\\[1ex]
+  \textbf{This is the only \emph{applied} cite in this module.} Read carefully.
+\end{frame}
+
+\begin{frame}{The three PID calls --- one per axis}
+  Inside \texttt{rate\_controller\_run\_dt}:
+  \begin{itemize}
+    \item \citeline{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{473} --- roll axis: target angular rate in, gyro reading in, \texttt{dt} in, PID output out.
+    \item \citeline{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{476} --- same shape on pitch.
+    \item \citeline{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{479} --- same shape on yaw.
+  \end{itemize}
+  Three PIDs, one per axis, each called once per loop.\\[1ex]
+  Name the inputs (target angular velocity, gyro reading, \texttt{dt}) without unpacking the PID math.
+\end{frame}
+
+\begin{frame}{Stage 4 --- PID, as a black box}
+  \citerange{libraries/AC_PID/AC_PID.cpp}{196}{272} --- \texttt{AC\_PID::update\_all}.\\[1ex]
+  Identify the line \texttt{float P\_out = (\_error * \_kp);} and stop.\\[1ex]
+  \instnote{We are at survey depth here. The integral, derivative, and filtering terms are named below but not unpacked --- the GNC course derives them.}
+  PID is:
+  \begin{quote}
+    Compute an \textbf{error} (target $-$ measurement),\\
+    multiply by \textbf{P},\\
+    add the \textbf{integral},\\
+    add the \textbf{derivative},\\
+    output.
+  \end{quote}
+  That is the sentence.\\[1ex]
+  Filtering / integrator branches are \emph{named} (\texttt{get\_filt\_T\_alpha}, \texttt{update\_i}, \dots) but \emph{not} unpacked.
+  \instadvanced{The downstream GNC course re-derives PID for engineers --- P/I/D/FF/IMAX, slew limits, target/error/derivative filters. Reference \siblingplane\ Day 3.}
+\end{frame}
+
+\begin{frame}{Stage 5 --- motor mixer}
+  \citerange{libraries/AP_Motors/AP_MotorsMatrix.cpp}{213}{244} --- opening of \texttt{AP\_MotorsMatrix::output\_armed\_stabilizing}.\\[1ex]
+  \emph{Survey} depth:
+  \begin{quote}
+    The mixer takes 4 numbers (roll, pitch, yaw, throttle) and decides how hard each of the four motors should push.
+  \end{quote}
+\end{frame}
+
+\begin{frame}{Why a quad X has motors at $+45^\circ / -135^\circ / -45^\circ / +135^\circ$}
+  \citerange{libraries/AP_Motors/AP_MotorsMatrix.cpp}{592}{602} --- the \texttt{MOTOR\_FRAME\_TYPE\_X} branch.\\[1ex]
+  Four entries, one per motor. Each is \texttt{\{ angle\_from\_forward, yaw\_direction, motor\_number \}}:
+  \begin{center}\small
+    \begin{tabular}{rcc}
+      $+45^\circ$  & CCW & motor 1 \\
+      $-135^\circ$ & CCW & motor 3 \\
+      $-45^\circ$  & CW  & motor 4 \\
+      $+135^\circ$ & CW  & motor 2 \\
+    \end{tabular}
+  \end{center}
+  \begin{itemize}
+    \item Angles place the four motors at the corners of a square \emph{rotated 45\textdegree} from body-forward --- the ``X'' frame.
+    \item Versus ``+'' frame: motors directly forward, back, left, right.
+    \item CCW/CW alternation: half the motors spin one way, half the other.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Why the CCW/CW alternation matters}
+  Each spinning prop applies a torque to the airframe in the \emph{opposite} direction of its spin.\\[1ex]
+  If all four props spun the same way, the airframe would yaw on its own.\\[1ex]
+  Two CCW + two CW $\Rightarrow$ the prop torques cancel when all motors spin equally hard.\\[1ex]
+  Yaw \emph{intentionally} is produced by speeding up two diagonal motors and slowing the other two --- that breaks the cancellation in a controlled way.\\[1ex]
+  This is what lets a quadrotor yaw at all without spinning around prop torque.
+\end{frame}
+
+\begin{frame}{Stage 6 --- ESC}
+  The mixer's four numbers go out as \textbf{PWM} (or DShot, or CAN) to the four electronic speed controllers (ESCs).\\[1ex]
+  We do \emph{not} look at HAL output paths in this course.\\[1ex]
+  End of the data path.
+  \vfill
+  \begin{center}
+    Stick $\rightarrow$ mode \texttt{run()} $\rightarrow$ attitude $\rightarrow$ rate $\rightarrow$ PID $\rightarrow$ mixer $\rightarrow$ ESC.
+  \end{center}
+\end{frame}
+
+\begin{frame}{Module 2.2 --- no in-module hands-on}
+  The closing lab in Module 2.4 is the day's main hands-on payload. No activity here.\\[1ex]
+  Spend the remaining minutes drilling the verbatim sentence.
+  \insttiming{Cold-call three students for the sentence. If any miss a stage, redraw it on the whiteboard.}
+\end{frame}
+
+%==============================================================================
+\section{Module 2.3 --- Failsafes (45 min, applied)}
+
+\begin{frame}{Module 2.3 --- Why does the autopilot ever decide for itself? Failsafes}
+  \textbf{45 min, lecture + demo, \emph{applied} depth.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Define ``failsafe'' as an automatic action when something goes wrong.
+    \item Name four failsafes: RC loss, battery, GCS link loss, \textbf{EKF variance}.
+    \item Read the EKF-failsafe code path at \emph{applied} depth, in preparation for the closing lab.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{Failsafe, plainly}
+  A failsafe is what the autopilot does on its own when:
+  \begin{itemize}
+    \item the operator has not asked for anything, or
+    \item the operator has asked for something the autopilot cannot trust.
+  \end{itemize}
+  Failsafes are the autopilot's ``do something sensible'' reflex.
+  \vfill
+  Same posture as the mode-refusal we saw in Module 1.4: \emph{better to refuse than to be wrong.}
+\end{frame}
+
+\begin{frame}{Four failsafes to recognise}
+  \begin{itemize}
+    \item \textbf{RC loss} --- the link to the RC transmitter dies. Default action: continue mission, or \flmode{RTL}, depending on configuration.
+    \item \textbf{Battery} --- voltage drops below threshold. Default action: \flmode{RTL} or \flmode{LAND}.
+    \item \textbf{GCS link loss} --- the link to the ground station dies (in modes where the GCS is steering, like \flmode{GUIDED}). Default action: \flmode{RTL} or \flmode{LAND}.
+    \item \textbf{EKF variance} --- the estimator stops trusting itself. \emph{This is what the closing lab triggers.} Default action: depends on \param{FS\_EKF\_ACTION}.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{The EKF failsafe code path}
+  \citerange{ArduCopter/ekf_check.cpp}{30}{90} --- \texttt{Copter::ekf\_check}.\\[1ex]
+  Runs at 10~Hz (per the scheduler entry at \citeline{ArduCopter/Copter.cpp}{201} from Module 2.1).\\[1ex]
+  Names to recognise (we are at \emph{applied} depth):
+  \begin{itemize}
+    \item \texttt{ekf\_check\_state.fail\_count} --- counter of consecutive bad samples.
+    \item \texttt{ekf\_check\_state.bad\_variance} --- sticky flag once the autopilot has declared a problem.
+    \item \texttt{g.fs\_ekf\_thresh} --- the parameter \param{FS\_EKF\_THRESH} (a numeric variance threshold). Zero disables the check.
+    \item \texttt{EKF\_CHECK\_ITERATIONS\_MAX} --- how many consecutive bad samples before the failsafe fires.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Three lines you will see triggered live in the closing lab}
+  \begin{itemize}
+    \item \citeline{ArduCopter/ekf_check.cpp}{83} --- \texttt{LOGGER\_WRITE\_ERROR(EKFCHECK, BAD\_VARIANCE);}\\
+      This writes an \texttt{ERR} row to the dataflash log with \texttt{Subsys = EKFCHECK}, \texttt{ECode = BAD\_VARIANCE}.\\
+      \textbf{This is the line you read out of the log in the closing lab.}
+    \item \citeline{ArduCopter/ekf_check.cpp}{86} --- \texttt{gcs().send\_text(MAV\_SEVERITY\_CRITICAL, "EKF variance: \%s", \dots);}\\
+      The \textbf{EKF variance:} \texttt{CRITICAL} statustext you will see live in the MAVProxy console during Step B.
+    \item \citeline{ArduCopter/ekf_check.cpp}{89} --- \texttt{failsafe\_ekf\_event();}\\
+      The actual action --- change mode according to \param{FS\_EKF\_ACTION}.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{The EKF self-test --- the contract}
+  The EKF runs a self-test. When its self-confidence drops below \param{FS\_EKF\_THRESH} for \texttt{EKF\_CHECK\_ITERATIONS\_MAX} consecutive samples, the autopilot declares a problem.\\[1ex]
+  That is the rule. The math behind ``self-confidence'' is not part of this course.
+  \instnote{Do not derive what the EKF variance actually is. The downstream GNC course derives \texttt{errorScore()} and the lane-switch logic from zero.}
+  \instadvanced{Reference \siblingplane\ Day 4 and \siblingquadplane\ Day 4 for the Kalman-filter material.}
+\end{frame}
+
+\begin{frame}{Pre-arm checks --- same posture, before take-off}
+  \citerange{ArduCopter/AP_Arming_Copter.cpp}{8}{20} --- \texttt{pre\_arm\_checks} and \texttt{run\_pre\_arm\_checks}.\\[1ex]
+  Survey depth.\\[1ex]
+  First thing \texttt{run\_pre\_arm\_checks} does at line 17: \emph{exit immediately if already armed.}\\[1ex]
+  Point: pre-arm checks have the \emph{same} purpose as failsafes:
+  \begin{quote}
+    The autopilot refuses to leave the ground unless every prerequisite is met.
+  \end{quote}
+  Same code-base personality.
+\end{frame}
+
+\begin{frame}{Module 2.3 demo --- watch the failsafe fire}
+  Instructor demos on the projector copy of SITL:
+  \begin{enumerate}
+    \item Arm.
+    \item Take off in \flmode{STABILIZE}.
+    \item Hover.
+    \item \texttt{param set SIM\_GPS\_DISABLE 1}.
+  \end{enumerate}
+  Watch the \textbf{EKF variance} \texttt{CRITICAL} warning appear and the vehicle's mode change.\\[1ex]
+  Students do \emph{not} run this themselves yet --- they will in Module 2.4.\\[1ex]
+  $\sim$5 min.
+  \insttiming{Tightly bound to 5 min. Do not preview the full closing lab here; it steals the hands-on payload.}
+\end{frame}
+
+%==============================================================================
+\section{Module 2.4 --- Closing lab (1.25 h, applied)}
+
+\begin{frame}{Module 2.4 --- Closing lab: scripted flight with a forced EKF failsafe}
+  \textbf{1.25 h, lab, \emph{applied} depth.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Run a full scripted SITL flight: take off, hover, RTL, disarm --- with \textbf{no fault}.
+    \item Run the same flight with \param{SIM\_GPS\_DISABLE} 1 injected mid-flight; observe the EKF failsafe; observe the vehicle still recover.
+    \item Inspect the dataflash log to identify the moment of failsafe by both GCS statustext and the dataflash \texttt{ERR} row.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{Reference fingerprint --- the source of truth}
+  \citerange{ArduCopter/ekf_check.cpp}{79}{89} --- the inner block of \texttt{ekf\_check} that fires when \texttt{fail\_count >= EKF\_CHECK\_ITERATIONS\_MAX}.\\[1ex]
+  Three lines you will see triggered in real time:
+  \begin{itemize}
+    \item Line 83 --- the \texttt{LOGGER\_WRITE\_ERROR(EKFCHECK, BAD\_VARIANCE)} dataflash row.
+    \item Line 86 --- the \texttt{EKF variance:} \texttt{CRITICAL} statustext in the MAVProxy console.
+    \item Line 89 --- the \texttt{failsafe\_ekf\_event()} call that changes mode.
+  \end{itemize}
+  Re-cited from Module 2.3 deliberately. This block is the lab's pass criterion.
+\end{frame}
+
+\begin{frame}{Lab L3 --- common setup for both steps}
+  \begin{itemize}
+    \item \textbf{Vehicle}: \texttt{ArduCopter}, frame \texttt{quad} (X), at the SITL default location.
+    \item \textbf{SITL invocation} (same as Lab L1):\\
+      \texttt{Tools/autotest/sim\_vehicle.py -v ArduCopter --console --map}
+    \item \textbf{Parameters}: defaults except \param{SIM\_GPS\_DISABLE} (toggled in Step B).
+    \item Leave \param{FS\_EKF\_ACTION}, \param{FS\_EKF\_THRESH}, the \param{EK3\_*} family at their defaults.
+  \end{itemize}
+  The lab harness will record the \param{FS\_EKF\_ACTION} default value at the iteration's commit so you know which mode (\flmode{LAND} or \flmode{RTL}) to expect.
+\end{frame}
+
+\begin{frame}{Step A --- clean run ($\sim$25 min)}
+  Scripted MAVProxy run from a freshly-launched SITL:
+  \begin{itemize}
+    \item[\texttt{>}] \texttt{arm throttle}
+    \item[\texttt{>}] \texttt{mode GUIDED}
+    \item[\texttt{>}] \texttt{takeoff 30}
+    \item[\texttt{>}] \emph{(hover 30 s)}
+    \item[\texttt{>}] \texttt{mode RTL}
+    \item[\texttt{>}] \emph{(wait disarm)}
+  \end{itemize}
+  \textbf{Pass criterion}:
+  \begin{itemize}
+    \item Vehicle disarmed within 180 s of \texttt{arm throttle}.
+    \item \emph{No} \texttt{MAV\_SEVERITY\_CRITICAL} statustext during the run.
+  \end{itemize}
+  \instnote{Step A is the warmup. Real-world drift is rare here. Spot-check that \emph{everyone} hits the criterion before letting Step B begin.}
+\end{frame}
+
+\begin{frame}{Step B --- failsafe injection ($\sim$50 min)}
+  Same launch, fresh arm. Same arm-takeoff-hover prefix as Step A.\\[1ex]
+  \textbf{At t = 60 s after} \texttt{arm throttle}, in the MAVProxy command terminal:
+  \begin{itemize}
+    \item[\texttt{>}] \texttt{param set SIM\_GPS\_DISABLE 1}
+  \end{itemize}
+  The simulator now stops feeding GPS to the autopilot.\\
+  The EKF's self-confidence drops; after \texttt{EKF\_CHECK\_ITERATIONS\_MAX} consecutive bad 10~Hz samples, the failsafe fires.
+\end{frame}
+
+\begin{frame}{Step B --- pass criteria (all four required)}
+  \begin{enumerate}
+    \item A \texttt{STATUSTEXT} with severity \texttt{CRITICAL} and text starting \texttt{EKF variance:} appears in the MAVProxy console within 30 s of the injection.
+    \item Vehicle changes mode to \flmode{LAND} or \flmode{RTL} (whichever \param{FS\_EKF\_ACTION} default is in this commit) within 30 s of the injection.
+    \item Vehicle ends \texttt{Disarming motors} within 240 s of the original \texttt{arm throttle}.
+    \item After the run: inspect the dataflash log (\texttt{mavlogdump.py --types ERR}) and find a row with \texttt{Subsys = EKFCHECK} and \texttt{ECode = BAD\_VARIANCE}.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{Step B --- the deliverable}
+  Each student records, on paper or in a text file:
+  \begin{enumerate}
+    \item The MAVProxy statustext at the moment of failure.\\
+      \emph{(Source: line 86 in \codepath{ekf\_check.cpp}, watched live.)}
+    \item The final mode the vehicle was in when it disarmed.
+    \item The dataflash \texttt{ERR} row from line 83 (read out of the log file).
+  \end{enumerate}
+  These three items are the deliverable for this course.
+  \insttiming{30 min minimum is observation-and-recording. Do not let students skip the log inspection --- it is the highest-leverage habit they can leave with.}
+\end{frame}
+
+%==============================================================================
+\section{Day 2 wrap-up}
+
+\begin{frame}{Day 2 buffer / Q\&A (30 min)}
+  Used for:
+  \begin{itemize}
+    \item Students whose Step B injection did not fire on the first run.
+    \item Edge cases: what if you inject GPS disable while still on the ground? What does the console look like in Step A vs Step B?
+    \item Parameter-system review questions left over from Day 1.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Day 2 totals}
+  \begin{itemize}
+    \item Module times: 0.75 + 0.75 + 0.75 + 1.25 = \textbf{3.5 h modules}.
+    \item Buffer: 0.5 h.
+    \item \textbf{Total: 4.0 h.}
+  \end{itemize}
+  Hands-on share: $\sim$0.1 h (2.1) + 0 h (2.2) + $\sim$0.1 h (2.3) + 1.25 h (2.4) $\approx$ \textbf{1.45 h / 3.5 h $\approx$ 41\%}.
+  \vfill
+  Day 2 is concept-heavier than Day 1 by design: sensors / scheduler / data path are read-the-source modules.
+\end{frame}
+
+\begin{frame}{What you have not been taught (deliberate gaps)}
+  If you continue to \siblingquadplane\ or \siblingplane, expect these as new material:
+  \begin{itemize}
+    \item \textbf{Missions} --- \texttt{MAV\_CMD\_NAV\_*}, \texttt{wp load}, \flmode{AUTO}.
+    \item \textbf{The autotest framework} --- \texttt{Tools/autotest/autotest.py}, scripted regression flights.
+    \item \textbf{ArduPilot code conventions} --- \texttt{AP\_HAL::millis()}, \texttt{is\_zero()}, \texttt{GCS\_SEND\_TEXT()}, snake\_case methods, \texttt{AP\_}/\texttt{AC\_}/\texttt{AR\_} class prefixes.
+    \item \texttt{AP\_<FEATURE>\_ENABLED} compile-time flags.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{What you \emph{have} been taught}
+  \begin{itemize}
+    \item The autopilot is one binary running on hardware or in SITL.
+    \item How to launch SITL and fly a quadrotor through arm / take-off / mode change / land / disarm.
+    \item The three-bucket mode taxonomy.
+    \item What a parameter is, and how to read or write one.
+    \item The \texttt{FAST\_TASK} / \texttt{SCHED\_TASK} shape of the scheduler.
+    \item The stick-to-ESC data path (memorise the sentence).
+    \item What failsafes are; what the EKF failsafe in particular looks like in code, in the console, and in the log.
+  \end{itemize}
+  \vfill
+  \begin{center}\large That is the on-ramp. Go fly something.\end{center}
+\end{frame}
+
+\end{document}

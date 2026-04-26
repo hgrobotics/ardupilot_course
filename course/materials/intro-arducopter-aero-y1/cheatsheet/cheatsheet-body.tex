@@ -1,0 +1,186 @@
+% cheatsheet/cheatsheet-body.tex
+% Two-column A4 cheat-sheet, single source for student + instructor builds.
+\documentclass[a4paper,9pt,landscape]{extarticle}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, landscape, margin=1.2cm]{geometry}
+\usepackage{multicol}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=1pt, topsep=2pt, leftmargin=*, parsep=0pt}
+\setlist[enumerate]{itemsep=1pt, topsep=2pt, leftmargin=*, parsep=0pt}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, urlcolor=blue!60!black, pdftitle={Introduction to ArduCopter --- Cheat-sheet}}
+\usepackage{url}
+\usepackage{titlesec}
+\titleformat{\section}{\large\bfseries}{}{0pt}{}
+\titleformat{\subsection}{\bfseries}{}{0pt}{}
+\titlespacing*{\section}{0pt}{4pt}{2pt}
+\titlespacing*{\subsection}{0pt}{3pt}{1pt}
+\setlength{\columnsep}{1cm}
+\setlength{\parindent}{0pt}
+\pagestyle{empty}
+
+\input{../shared/macros.tex}
+
+% Cheat-sheet doesn't carry full instructor blocks; instructor edition adds answer-key
+% callouts inline only.
+\renewcommand{\instnote}[1]{\ifinstructor\par\smallskip\textit{\footnotesize Instructor: #1}\par\fi}
+\renewcommand{\insttiming}[1]{}
+\renewcommand{\instfaq}[2]{}
+\renewcommand{\instadvanced}[1]{\ifinstructor\par\smallskip\textit{\footnotesize Advanced: #1}\par\fi}
+
+\begin{document}
+\begin{center}
+  \textbf{\large Introduction to ArduCopter --- Cheat-sheet}\quad\textbar\quad
+  \ifinstructor Instructor edition\else Student edition\fi\quad\textbar\quad
+  Branch \texttt{GNC-0.1}\quad\textbar\quad
+  \footnotesize\copyrightline
+\end{center}
+\hrule\medskip
+
+\begin{multicols*}{2}
+
+\section*{MAVProxy commands used in this course}
+Only these. No others.
+\begin{itemize}
+  \item \texttt{mode <NAME>} --- request a flight-mode change.
+  \item \texttt{arm throttle} --- arm motors.
+  \item \texttt{rc 3 1700} --- throttle stick to 1700~$\mu$s PWM.
+  \item \texttt{takeoff <m>} --- guided take-off to altitude (Step A).
+  \item \texttt{param show <NAME>} --- read a parameter.
+  \item \texttt{param set <NAME> <VAL>} --- write a parameter.
+\end{itemize}
+
+\section*{SITL launch}
+\begin{itemize}
+  \item \texttt{./waf configure --board sitl}
+  \item \texttt{./waf copter}
+  \item \texttt{Tools/autotest/sim\_vehicle.py -v ArduCopter --console --map}
+\end{itemize}
+Three windows: console (status), command (you type), map.\\
+\textbf{Pass:} \texttt{HEARTBEAT} + map render + \texttt{online system 1} within $\sim$30~s.
+
+\section*{Flight modes --- 3 buckets}
+\begin{itemize}
+  \item \textbf{Manual} --- \flmode{STABILIZE}, \flmode{ACRO}.
+  \item \textbf{Stabilized-with-altitude} --- \flmode{ALT\_HOLD}.
+  \item \textbf{Autonomous} --- \flmode{AUTO}, \flmode{GUIDED}, \flmode{RTL}, \flmode{LAND}.
+\end{itemize}
+Mode IDs (subset): \flmode{STABILIZE}=0, \flmode{ALT\_HOLD}=2, \flmode{LAND}=9.\\
+Mode entries: \citerange{ArduCopter/mode.h}{77}{109}.
+
+\section*{Mode-switch refusal}
+\begin{itemize}
+  \item \texttt{requires position} $\rightarrow$ \citeline{ArduCopter/mode.cpp}{394}.
+  \item \texttt{need alt estimate} $\rightarrow$ \citeline{ArduCopter/mode.cpp}{404}.
+\end{itemize}
+Function: \texttt{Copter::set\_mode}, \citerange{ArduCopter/mode.cpp}{313}{396}.
+
+\section*{The init / run pattern}
+Every mode has \texttt{init()} (once on entry) and \texttt{run()} (high rate).
+\begin{itemize}
+  \item \citerange{ArduCopter/mode_althold.cpp}{9}{22} --- \texttt{ModeAltHold::init}.
+  \item \citerange{ArduCopter/mode_althold.cpp}{26}{104} --- \texttt{ModeAltHold::run}.
+  \item \citerange{ArduCopter/mode_stabilize.cpp}{9}{64} --- \texttt{ModeStabilize::run}.
+\end{itemize}
+
+\section*{First flight (Lab L2)}
+\begin{enumerate}
+  \item \texttt{mode STABILIZE}
+  \item \texttt{arm throttle}
+  \item \texttt{rc 3 1700}
+  \item Wait altitude $> 10$~m.
+  \item \texttt{mode LAND}
+  \item Wait \texttt{Disarming motors}.
+\end{enumerate}
+\textbf{Pass:} \texttt{Disarming motors} within 90~s of arm.
+
+\section*{Parameters}
+Persistent runtime config; not compiled in. Annotation-block example at \citerange{ArduCopter/Parameters.cpp}{44}{51} (\texttt{PILOT\_THR\_FILT}); keys: \texttt{@Param}, \texttt{@DisplayName}, \texttt{@Description}, \texttt{@Range}/\texttt{@Values}, \texttt{@Units}, \texttt{@User}.\\
+Real table opening: \citerange{ArduCopter/Parameters.cpp}{33}{67}.\\
+Mode bands: \citerange{ArduCopter/Parameters.cpp}{149}{191} (\param{FLTMODE1}--\param{FLTMODE6}, \param{FLTMODE\_CH}).
+
+\columnbreak
+
+\section*{Sensors $\rightarrow$ EKF $\rightarrow$ scheduler}
+\begin{itemize}
+  \item Sensors: IMU, baro, mag, GPS.
+  \item EKF: estimator. Black box for this course.
+  \item Scheduler: \texttt{FAST\_TASK} (every loop) or \texttt{SCHED\_TASK(func, rate, max\_us, prio)}.
+\end{itemize}
+Anchors:
+\begin{itemize}
+  \item \citerange{ArduCopter/Copter.cpp}{113}{149} --- \texttt{scheduler\_tasks[]} opening.
+  \item \citeline{ArduCopter/Copter.cpp}{117} --- \texttt{run\_rate\_controller\_main}.
+  \item \citeline{ArduCopter/Copter.cpp}{127} --- \texttt{read\_AHRS} (= EKF).
+  \item \citeline{ArduCopter/Copter.cpp}{201} --- \texttt{ekf\_check, 10~Hz}.
+  \item \citeline{ArduCopter/Copter.cpp}{998} --- entry point macro.
+  \item \citerange{libraries/AP_Vehicle/AP_Vehicle.cpp}{558}{566} --- main loop $=$ \texttt{scheduler.loop()}.
+\end{itemize}
+\texttt{SCHED\_LOOP\_RATE} default: 400~Hz.
+
+\section*{The data-path sentence (memorise)}
+\begin{quote}\small
+Stick $\rightarrow$ mode \texttt{run()} $\rightarrow$ attitude controller $\rightarrow$ rate controller $\rightarrow$ PID $\rightarrow$ motor mixer $\rightarrow$ ESC.
+\end{quote}
+Stage 3 anchors:
+\begin{itemize}
+  \item \citerange{ArduCopter/Attitude.cpp}{10}{24} --- \texttt{run\_rate\_controller\_main}.
+  \item \citerange{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{457}{485} --- body.
+  \item Roll/pitch/yaw PIDs: \citeline{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{473}, \citeline{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{476}, \citeline{libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp}{479}.
+\end{itemize}
+PID: \citerange{libraries/AC_PID/AC_PID.cpp}{196}{272}. Identify \texttt{P\_out = (\_error * \_kp);} and stop.\\
+Mixer opening: \citerange{libraries/AP_Motors/AP_MotorsMatrix.cpp}{213}{244}.\\
+X-frame angles: \citerange{libraries/AP_Motors/AP_MotorsMatrix.cpp}{592}{602} ($+45^\circ, -135^\circ, -45^\circ, +135^\circ$, alternating CCW/CW).
+
+\section*{Failsafes}
+Four to recognise: RC loss, battery, GCS link loss, \textbf{EKF variance}.\\
+EKF-failsafe code path: \citerange{ArduCopter/ekf_check.cpp}{30}{90}.\\
+Names: \texttt{ekf\_check\_state.fail\_count}, \texttt{.bad\_variance}, \texttt{g.fs\_ekf\_thresh} ($=$ \param{FS\_EKF\_THRESH}), \texttt{EKF\_CHECK\_ITERATIONS\_MAX}.\\
+Three trigger lines:
+\begin{itemize}
+  \item \citeline{ArduCopter/ekf_check.cpp}{83} --- \texttt{LOGGER\_WRITE\_ERROR(EKFCHECK, BAD\_VARIANCE)}.
+  \item \citeline{ArduCopter/ekf_check.cpp}{86} --- \texttt{EKF variance:} \texttt{CRITICAL} statustext.
+  \item \citeline{ArduCopter/ekf_check.cpp}{89} --- \texttt{failsafe\_ekf\_event()}.
+\end{itemize}
+Pre-arm posture (same shape, at boot): \citerange{ArduCopter/AP_Arming_Copter.cpp}{8}{20}.
+
+\section*{Closing lab (L3) --- Step A clean run}
+\begin{verbatim}
+arm throttle
+mode GUIDED
+takeoff 30
+(hover 30 s)
+mode RTL
+(wait disarm)
+\end{verbatim}
+\textbf{Pass:} disarm within 180~s, no \texttt{CRITICAL} statustext.
+
+\section*{Closing lab (L3) --- Step B failsafe}
+At t = 60~s after arm: \texttt{param set SIM\_GPS\_DISABLE 1}.\\
+\textbf{Pass} (all 4):
+\begin{enumerate}
+  \item \texttt{EKF variance:} \texttt{CRITICAL} within 30~s of injection.
+  \item Mode change to \flmode{LAND}/\flmode{RTL} within 30~s.
+  \item Disarm within 240~s of original arm.
+  \item Dataflash \texttt{ERR}: \texttt{Subsys=EKFCHECK}, \texttt{ECode=BAD\_VARIANCE} via \texttt{mavlogdump.py --types ERR}.
+\end{enumerate}
+Fingerprint: \citerange{ArduCopter/ekf_check.cpp}{79}{89}.
+
+\ifinstructor
+\section*{Instructor extras}
+\begin{itemize}
+  \item Pacing: Day 1 hands-on $\sim$59\%; Day 2 hands-on $\sim$41\% (load-bearing on Module 2.4).
+  \item Don't unpack PID, EKF, or spool-state internals --- those are the GNC course's job.
+  \item Advanced pointers for Q\&A: \siblingplane, \siblingquadplane.
+  \item Apt-mirror diagnostic: verify \texttt{apt-cache madison <pkg>} against \texttt{archive.ubuntu.com}; switch the configured mirror if it is behind.
+\end{itemize}
+\fi
+
+\end{multicols*}
+\end{document}

@@ -1,0 +1,37 @@
+% macros.tex
+% Citation hyperlinks point at this fork on the GNC-0.1 branch (where the course tree lives).
+% Display text follows citation-rigor.md: "path:line" or "path:start-end".
+% Link target is the GitHub blob URL on the project's actual remote.
+
+\providecommand{\repourl}{https://github.com/hgrobotics/ardupilot_course/blob/GNC-0.1}
+
+% \citeline{path}{line} — single-line cite (e.g. \citeline{ArduCopter/Copter.h}{181})
+\newcommand{\citeline}[2]{\href{\repourl/#1\#L#2}{\nolinkurl{#1}:#2}}
+
+% \citerange{path}{start}{end} — line-range cite
+\newcommand{\citerange}[3]{\href{\repourl/#1\#L#2-L#3}{\nolinkurl{#1}:#2-#3}}
+
+% \citefile{path} — whole-file cite (no line)
+\newcommand{\citefile}[1]{\href{\repourl/#1}{\nolinkurl{#1}}}
+
+% Sibling-course pointers (relative paths inside this repo, used in instructor "advanced pointers" notes).
+\newcommand{\siblingplane}{\href{\repourl/course/custom_gnc_course_plane.md}{course/custom\_gnc\_course\_plane.md}}
+\newcommand{\siblingquadplane}{\href{\repourl/course/custom_gnc_course_quadplane.md}{course/custom\_gnc\_course\_quadplane.md}}
+
+% Copyright line — inserted on title pages / cheatsheet header.
+\newcommand{\copyrightline}{\copyright\ 2026 HG Robotics Co., Ltd.}
+
+% Inline param-name and code-path styling (no inline code listings on slides per pedagogy).
+\newcommand{\param}[1]{\texttt{#1}}
+\newcommand{\codepath}[1]{\texttt{\nolinkurl{#1}}}
+\newcommand{\mavcmd}[1]{\texttt{#1}}
+% Note: \mode is already defined by Beamer (for overlay specs). Use \flmode (flight mode).
+\newcommand{\flmode}[1]{\textsc{#1}}
+
+% Instructor-note environments. Suppressed in student build via the \ifinstructor gate.
+% Used for: (1) expected answers + timing, (2) anticipated student FAQs, (3) speaker notes,
+% (4) advanced-material pointers.
+\newcommand{\instnote}[1]{\ifinstructor\begin{block}{Instructor note}#1\end{block}\fi}
+\newcommand{\insttiming}[1]{\ifinstructor\begin{block}{Pacing}#1\end{block}\fi}
+\newcommand{\instfaq}[2]{\ifinstructor\begin{block}{Anticipated Q: #1}#2\end{block}\fi}
+\newcommand{\instadvanced}[1]{\ifinstructor\begin{block}{Advanced material pointer}#1\end{block}\fi}

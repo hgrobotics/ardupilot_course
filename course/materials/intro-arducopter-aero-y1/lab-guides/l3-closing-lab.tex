@@ -1,0 +1,507 @@
+% lab-guides/l3-closing-lab.tex
+% Single source for Lab L3 student + instructor PDFs. Gated by version-flags.tex.
+
+\documentclass[a4paper,11pt,twoside]{article}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, margin=2.2cm]{geometry}
+\usepackage{titling}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\setlist[enumerate]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  pdftitle={Lab L3 --- Closing Lab: Clean Run + EKF Failsafe Injection},
+}
+\usepackage{url}
+\usepackage{fancyvrb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+\usepackage{array}
+\usepackage{longtable}
+
+\input{../shared/macros.tex}
+
+\renewcommand{\instnote}[1]{\ifinstructor\begin{tcolorbox}[colback=blue!4!white,colframe=blue!40!black,title=Instructor note,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\insttiming}[1]{\ifinstructor\begin{tcolorbox}[colback=orange!5!white,colframe=orange!50!black,title=Pacing,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\instfaq}[2]{\ifinstructor\begin{tcolorbox}[colback=green!4!white,colframe=green!40!black,title=Anticipated Q: #1,breakable]#2\end{tcolorbox}\fi}
+\renewcommand{\instadvanced}[1]{\ifinstructor\begin{tcolorbox}[colback=violet!5!white,colframe=violet!50!black,title=Advanced material pointer,breakable]#1\end{tcolorbox}\fi}
+
+\title{Lab L3 --- Closing Lab\\
+  \large Clean Run + EKF Failsafe Injection\\
+  \large \ifinstructor Instructor Guide\else Student Guide\fi}
+\author{\copyrightline}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Codebase reference:} branch \texttt{GNC-0.1} of \href{\repourl}{\nolinkurl{hgrobotics/ardupilot_course}}. Every source-code link in this lab guide opens the cited file at the named line on GitHub.
+
+\bigskip
+
+\ifinstructor
+% =============================================================================
+% INSTRUCTOR EDITION
+% =============================================================================
+
+\begin{tcolorbox}[colback=red!5!white,colframe=red!40!black,title=Instructor edition]
+This is the instructor edition. Do \textbf{not} hand this to students --- the student edition is the same source compiled without the instructor flag.
+\end{tcolorbox}
+
+\section*{Lab summary for the instructor}
+
+\textbf{What the student is supposed to learn:}
+\begin{enumerate}
+  \item How to run a fully scripted autonomous flight (arm, GUIDED takeoff, hover, RTL, land) without manual input and confirm it succeeded from the GCS console.
+  \item How a GPS failure propagates through the EKF check loop to a \texttt{MAV\_SEVERITY\_CRITICAL} STATUSTEXT, a mode change, and a dataflash \texttt{ERR} row --- and how to trace each of those events back to a specific line in \texttt{ArduCopter/ekf\_check.cpp}.
+  \item How to use \texttt{mavlogdump.py --types ERR} to extract the relevant rows from a binary dataflash log.
+\end{enumerate}
+
+\textbf{Depth marker:} \emph{applied}. Students read the three-line block at \citerange{ArduCopter/ekf_check.cpp}{83}{89} and match each line to a live event. They do not derive what EKF variance means, what the Kalman gain is, or how the innovation covariance is computed. That is the GNC course's job. Do not unpack the \texttt{ekf\_over\_threshold()} function body (\citerange{ArduCopter/ekf_check.cpp}{105}{165}) or the EKF3 lane-switch machinery --- those are internals-depth material reserved for the downstream GNC course.
+
+\textbf{How this lab feeds later modules:} Lab L3 is the capstone. It confirms that the student can connect a live observable (console text), a binary artifact (dataflash log), and a source location (file:line) for the same event. This triple-confirmation skill is the entry-level prerequisite for the downstream GNC courses, where every module has associated log fingerprints and source citations.
+
+\textbf{Downstream course connection:} the EKF3 multi-lane architecture is introduced in the downstream GNC plane/quadplane course (\siblingplane, \siblingquadplane) starting from the \texttt{checkLaneSwitch()} function. The EKF failsafe path students observe here (\texttt{failsafe\_ekf\_event()} at \citeline{ArduCopter/ekf_check.cpp}{89}) is a different, higher-level mechanism --- it fires after the EKF is already confirmed bad, whereas the lane switch fires preemptively when a secondary lane is healthier. The downstream course will distinguish these two; this lab only establishes that the failsafe path exists.
+
+\section*{Pacing}
+
+The headless agent test runs in approximately 30--60 seconds wall-clock at \texttt{--speedup 10} (both steps in sequence). Student-facing budget:
+
+\subsection*{Step A ($\sim$25 min total)}
+
+\begin{center}\small
+\begin{tabular}{|p{4.5cm}|p{3.0cm}|p{7.0cm}|}\hline
+\textbf{Sub-step} & \textbf{Wall-clock time} & \textbf{Notes} \\ \hline
+A.1 SITL launch + online & 2--3 min & \texttt{-w} wipes EEPROM; EKF init adds $\sim$5~s at speedup 10. \\ \hline
+A.2 Load \texttt{params.parm} & $<1$ min & Three non-default params. \\ \hline
+A.3 Run orchestrator & 10--12 min & EKF healthy wait ($\sim$5~s), arm, takeoff to 30~m, 30~s hover, RTL, land, disarm --- all at speedup 10. Wall-clock $\sim$3~min actual; budget 5~min for students reading console. \\ \hline
+A.4 Observe + record log path & 3--5 min & Encourage students to watch every STATUSTEXT. \\ \hline
+A.5 Post-flight buffer & 5 min & Questions on Step A before moving to Step B. \\ \hline
+\end{tabular}
+\end{center}
+
+\subsection*{Step B ($\sim$50 min total)}
+
+\begin{center}\small
+\begin{tabular}{|p{4.5cm}|p{3.0cm}|p{7.0cm}|}\hline
+\textbf{Sub-step} & \textbf{Wall-clock time} & \textbf{Notes} \\ \hline
+B.1 SITL reset + launch & 2--3 min & \\ \hline
+B.2 Load params again & $<1$ min & \\ \hline
+B.3 Run orchestrator & 10--15 min & Includes 6~s wall-clock (60~s simulated) hover before GPS injection, then failsafe watch, then LAND+disarm. \\ \hline
+B.4 Observe failsafe & 5 min & Students watch console for \texttt{EKF variance: over thresholds}. \\ \hline
+B.5 Inspect log & 15--20 min & Running \texttt{mavlogdump.py --types ERR} and locating \texttt{Subsys : 16, ECode : 2}. Budget extra for students unfamiliar with the command line. \\ \hline
+B.6 Record findings & 5--10 min & Students write three items: STATUSTEXT, mode at disarm, ERR row. \\ \hline
+\end{tabular}
+\end{center}
+
+\textbf{Total:} $\sim$75 min. The Day 2 30-minute buffer is immediately after this lab --- it exists specifically for students who need a second attempt on Step B or who want to explore edge cases.
+
+\textbf{Speedup note:} the orchestrator uses \texttt{HOVER\_SECONDS = 3} and \texttt{GPS\_INJECT\_T = 6} (both in wall-clock seconds at \texttt{--speedup 10}), corresponding to 30 simulated seconds of hover and 60 simulated seconds before GPS injection. This is deliberate: the student guide describes the sim-time values (30~s hover, 60~s before fault) so students understand what they are observing; the actual wall-clock wait is much shorter.
+
+\section*{Pre-arm setup checklist}
+
+Before students start:
+\begin{itemize}[label={[ ]}]
+  \item Labs L1 and L2 verified on each machine.
+  \item \texttt{python3 -c "from pymavlink import DFReader; print('OK')"} succeeds (needed for log parsing in Step B).
+  \item \texttt{mavlogdump.py --help} succeeds.
+  \item Confirm the launch command includes \texttt{--out udp:127.0.0.1:14550} --- the orchestrator connects via UDP, not TCP. Without this flag the orchestrator cannot connect.
+  \item Confirm no stale SITL processes: \texttt{ps aux | grep arducopter}.
+  \item Warn students: the orchestrator in Step B sets \texttt{SIM\_GPS1\_ENABLE = 0} automatically. They should not also set it manually from the MAVProxy terminal during the orchestrated run, or the timing will be off.
+  \item Confirm students are running both commands from the repository root. The orchestrator's \texttt{find\_latest\_log()} searches for \texttt{logs/*.BIN} relative to the current working directory.
+\end{itemize}
+
+\section*{Common student failures and what to say}
+
+\textbf{Exit code 6 --- ``EKF did not become healthy within timeout''}
+
+Diagnostic: \texttt{python3 -c "from pymavlink import mavutil; m = mavutil.mavlink\_connection('udp:127.0.0.1:14550'); print(m.recv\_match(type='EKF\_STATUS\_REPORT', blocking=True, timeout=10))"} while SITL is running.
+
+What to say: ``SITL was not launched with \texttt{--out udp:127.0.0.1:14550}, or the EKF never acquired GPS lock. Restart SITL with the L3 launch script (\texttt{-w} to wipe EEPROM) and wait for \texttt{online system 1} before running the orchestrator.''
+
+\textbf{Exit code 2 --- ``EKF variance: STATUSTEXT not seen''}
+
+Diagnostic: check the orchestrator output for \texttt{param SIM\_GPS1\_ENABLE = 0.0000} --- if this line is missing, the GPS disable did not take effect.
+
+What to say: ``The GPS disable parameter was not written or acknowledged. The most common cause is that the SITL UDP port was not open when the orchestrator tried to send the param. Restart both SITL and the orchestrator.''
+
+\textbf{Exit code 3 --- ``mode did not change to LAND''}
+
+Diagnostic: \texttt{param show FS\_EKF\_ACTION} in the MAVProxy terminal should read \texttt{1.0}. If it reads \texttt{0.0} (disabled), the failsafe is off.
+
+What to say: ``The \texttt{params.parm} file was not loaded, or was loaded with an error. Run \texttt{param load course/labs/intro-arducopter-aero-y1/l3-closing-lab/params.parm} in the MAVProxy terminal and confirm \texttt{FS\_EKF\_ACTION = 1.0}.''
+
+\textbf{Exit code 5 --- ``ERR row Subsys=16/ECode=2 not found in log''}
+
+Diagnostic: \texttt{ls -la logs/*.BIN} from the repository root. If the directory does not exist or the file is zero bytes, the SITL binary did not write a log.
+
+What to say: ``SITL was not run from the repository root, so \texttt{logs/} was not created there. Run both \texttt{sim\_vehicle.py} and the orchestrator from the repository root. The orchestrator's \texttt{find\_latest\_log()} function looks for \texttt{logs/*.BIN} relative to the current directory.''
+
+\textbf{Exit code 1 during Step A --- ``unexpected CRITICAL statustext''}
+
+This usually means a parameter from a crashed Step B is still in EEPROM (e.g., \texttt{SIM\_GPS1\_ENABLE = 0}). Restart SITL with \texttt{-w} (wipe EEPROM) and reload \texttt{params.parm}.
+
+\textbf{\texttt{mavlogdump.py} cannot open the log file}
+
+Confirm the path uses the uppercase \texttt{.BIN} extension and that the file was written during the current SITL session. Stale logs from previous sessions in \texttt{logs/} will also appear; use the path printed by the orchestrator, which always points to the most recently modified file.
+
+\section*{Verdict signatures}
+
+\subsection*{Step A}
+
+\begin{center}\small
+\begin{tabular}{|p{4.0cm}|p{5.5cm}|p{5.0cm}|}\hline
+\textbf{Criterion} & \textbf{Signal} & \textbf{Pass threshold} \\ \hline
+No CRITICAL statustext & STATUSTEXT.severity > 2 throughout & No \texttt{severity <= 2} message except \texttt{ARMED} \\ \hline
+\texttt{Disarming motors} & STATUSTEXT.text contains \texttt{Disarming motors} & Within 180~s of arm \\ \hline
+\end{tabular}
+\end{center}
+
+\subsection*{Step B}
+
+\begin{center}\small
+\begin{tabular}{|p{4.0cm}|p{5.5cm}|p{5.0cm}|}\hline
+\textbf{Criterion} & \textbf{Signal} & \textbf{Pass threshold} \\ \hline
+\texttt{EKF variance:} STATUSTEXT & STATUSTEXT.severity == 2, text starts \texttt{EKF variance:} & Within 30~s of \texttt{SIM\_GPS1\_ENABLE = 0} \\ \hline
+Mode change to LAND & HEARTBEAT mode string == \texttt{LAND} & Within 30~s of injection \\ \hline
+\texttt{Disarming motors} & HEARTBEAT \texttt{SAFETY\_ARMED} flag clears & Within 240~s of original arm \\ \hline
+ERR row in log & \texttt{DFReader} finds \texttt{ERR} with \texttt{Subsys=16, ECode=2} & Present in \texttt{logs/*.BIN} \\ \hline
+\end{tabular}
+\end{center}
+
+Exact STATUSTEXT strings:
+
+\begin{center}\small
+\begin{tabular}{|p{5.0cm}|p{2.5cm}|p{6.5cm}|}\hline
+\textbf{Text} & \textbf{Severity value} & \textbf{Source} \\ \hline
+\texttt{EKF variance: over thresholds} & \texttt{2} (CRITICAL) & \citeline{ArduCopter/ekf_check.cpp}{86} \\ \hline
+\texttt{Disarming motors} & \texttt{6} (INFO) & ArduCopter disarm path \\ \hline
+\texttt{LAND complete} & \texttt{6} (INFO) & ArduCopter LAND mode \\ \hline
+\end{tabular}
+\end{center}
+
+Dataflash ERR row:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+ERR  {TimeUS : <N>, Subsys : 16, ECode : 2}
+\end{Verbatim}
+
+Source of \texttt{Subsys = 16}: \texttt{LogErrorSubsystem::EKFCHECK = 16} (\citeline{libraries/AP_Logger/AP_Logger.h}{128}).\\
+Source of \texttt{ECode = 2}: \texttt{LogErrorCode::EKFCHECK\_BAD\_VARIANCE = 2} (\citeline{libraries/AP_Logger/AP_Logger.h}{180}).\\
+Written at: \citeline{ArduCopter/ekf_check.cpp}{83}.
+
+Orchestrator exit codes (for full reference):
+
+\begin{center}\small
+\begin{tabular}{|c|p{12.0cm}|}\hline
+\textbf{Code} & \textbf{Meaning} \\ \hline
+\texttt{0} & All pass criteria met \\ \hline
+\texttt{1} & Step A: CRITICAL statustext or disarm timeout \\ \hline
+\texttt{2} & Step B: \texttt{EKF variance:} not seen within 30~s \\ \hline
+\texttt{3} & Step B: mode did not change to LAND within 30~s \\ \hline
+\texttt{4} & Step B: disarm timeout ($>240$~s from arm) \\ \hline
+\texttt{5} & Step B: \texttt{ERR Subsys=16/ECode=2} not found in log \\ \hline
+\texttt{6} & EKF not healthy within timeout --- hard fail, both steps \\ \hline
+\texttt{10} & Connection or arm failure \\ \hline
+\end{tabular}
+\end{center}
+
+\section*{Pointers to advanced material}
+
+\begin{itemize}
+  \item The full \texttt{ekf\_check()} function at \citerange{ArduCopter/ekf_check.cpp}{30}{90} is walked at \emph{applied} depth in Module 2.3 before this lab. The scheduler entry \texttt{SCHED\_TASK(ekf\_check, 10, 75, 84)} at \citeline{ArduCopter/Copter.cpp}{201} connects the 10~Hz rate to the \texttt{EKF\_CHECK\_ITERATIONS\_MAX = 10} constant, explaining the $\sim$1~s latency from variance threshold crossing to failsafe fire.
+
+  \item The downstream GNC plane course introduces the EKF3 multi-lane architecture and the \texttt{checkLaneSwitch()} function. That mechanism (proactive lane switching when a secondary IMU lane is healthier) is distinct from the failsafe path (reactive LAND when the primary EKF is confirmed bad). Prepare students for the distinction: ``what you observed here is the failsafe --- the EKF told the autopilot it was broken and the autopilot reacted. The downstream course covers a different path: the EKF proactively switching lanes before anything breaks.''
+
+  \item The \texttt{FS\_EKF\_THRESH} parameter (set to \texttt{0.8} in \texttt{params.parm}) is defined at \texttt{ArduCopter/config.h:106} as \texttt{FS\_EKF\_THRESH\_DEFAULT}. Students who ask ``how bad does it have to get?'' can look at the \texttt{ekf\_over\_threshold()} function --- but do not walk it in class; it is internals depth. Point them to it as optional reading.
+
+  \item \texttt{mavlogdump.py} is the same tool used by the downstream course's MAVExplorer-based log inspection modules. The \texttt{--types ERR} flag is one instance of a general pattern: \texttt{--types CTUN}, \texttt{--types GPS}, \texttt{--types XKF4} are all used in the downstream courses. Students who are curious can run \texttt{mavlogdump.py --help} to see the full list.
+\end{itemize}
+
+\else
+% =============================================================================
+% STUDENT EDITION
+% =============================================================================
+
+\section*{What you will do}
+
+This is the capstone lab for the course. You will run two scripted SITL flights in sequence. In Step A you will arm, take off to 30~m, hover, return to home, and land --- a clean flight with no failures. In Step B you will run the same flight but at 60 seconds after arming the orchestrator will cut the simulated GPS feed to the autopilot. You will watch the EKF (the autopilot's position estimation system) lose confidence, trip a failsafe, and command the vehicle to land automatically. You will then read the dataflash log to find the exact row the autopilot wrote when the failsafe fired. Those three things --- the live console message, the mode change, and the log row --- are your deliverable for this course.
+
+\section*{Before you start}
+
+\textbf{Previous labs required:} Labs L1 and L2 must be complete. You should have a working SITL build and know how to launch \texttt{sim\_vehicle.py} and issue MAVProxy commands.
+
+\textbf{Software that must be available:}
+\begin{itemize}
+  \item \texttt{python3} with \texttt{pymavlink} installed. Verify with: \texttt{python3 -c "import pymavlink; print('OK')"}
+  \item \texttt{mavlogdump.py} on your PATH. Verify with: \texttt{mavlogdump.py --help}
+\end{itemize}
+
+\textbf{Two terminals are required:}
+\begin{itemize}
+  \item Terminal 1: runs \texttt{sim\_vehicle.py} (the SITL simulator + MAVProxy).
+  \item Terminal 2: runs \texttt{run\_lab.py} (the Python orchestrator that drives the flight).
+\end{itemize}
+
+\textbf{No hardware required.}
+
+\section*{The steps}
+
+\textbf{Total estimated time:} 75 minutes.\\
+\textbf{Goal:} run a scripted clean flight (Step A), then re-run with GPS failure injected at t+60s and observe the EKF failsafe (Step B).
+
+\subsection*{Pre-conditions}
+\begin{itemize}
+  \item Labs L1 and L2 completed.
+  \item \texttt{pymavlink} installed: \texttt{python3 -c "import pymavlink"} must not raise an error.
+  \item \texttt{mavlogdump.py} available: \texttt{mavlogdump.py --help} must succeed.
+\end{itemize}
+
+\subsection*{Part 1 --- Step A: Clean run ($\sim$25 min)}
+
+\paragraph{Step A.1 --- Launch SITL.}
+In Terminal 1, from the repository root:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+python3 Tools/autotest/sim_vehicle.py -v ArduCopter -f quad -N \
+    --console --map -w --out udp:127.0.0.1:14550
+\end{Verbatim}
+
+Or use the provided launch script:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+bash course/labs/intro-arducopter-aero-y1/l3-closing-lab/launch.sh
+\end{Verbatim}
+
+Wait for \texttt{online system 1} in the MAVProxy terminal before continuing.
+
+\paragraph{Step A.2 --- Load lab parameters.}
+In the MAVProxy command terminal (the window running MAVProxy, not the orchestrator):
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+param load course/labs/intro-arducopter-aero-y1/l3-closing-lab/params.parm
+\end{Verbatim}
+
+Wait 2 seconds for parameters to be written.
+
+\paragraph{Step A.3 --- Run the orchestrator in Step A mode.}
+In Terminal 2, from the repository root:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+python3 course/labs/intro-arducopter-aero-y1/l3-closing-lab/run_lab.py --step A
+\end{Verbatim}
+
+The orchestrator will:
+\begin{enumerate}
+  \item Connect to the SITL vehicle via UDP port 14550.
+  \item Wait for EKF to initialise (GPS lock, EKF healthy).
+  \item Arm the vehicle.
+  \item Set mode to GUIDED.
+  \item Command takeoff to 30~m.
+  \item Hover for 30 seconds at 30~m.
+  \item Set mode to RTL.
+  \item Wait for disarm.
+\end{enumerate}
+
+\paragraph{Step A.4 --- Observe.}
+Watch the MAVProxy console. You will see:
+\begin{itemize}
+  \item \texttt{ARMED}
+  \item \texttt{Flight mode change successful} (to GUIDED)
+  \item \texttt{Taking off} or altitude increasing
+  \item \texttt{Flight mode change successful} (to RTL)
+  \item \texttt{Reached home} or altitude decreasing
+  \item \texttt{LAND complete}
+  \item \texttt{Disarming motors}
+\end{itemize}
+
+\textbf{Pass criterion for Step A:} \texttt{Disarming motors} appears within 180 seconds of arm. No \texttt{MAV\_SEVERITY\_CRITICAL} statustext during the run.
+
+\paragraph{Step A.5 --- Note the log file.}
+The orchestrator prints the path to the dataflash log file when it exits. Note this path for Step A log review (optional).
+
+\subsection*{Part 2 --- Step B: EKF failsafe injection ($\sim$50 min)}
+
+\paragraph{Step B.1 --- Reset SITL for a fresh run.}
+Press Ctrl+C in Terminal 1 (or type \texttt{exit} in the MAVProxy terminal) to stop SITL. Relaunch:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+python3 Tools/autotest/sim_vehicle.py -v ArduCopter -f quad -N \
+    --console --map -w --out udp:127.0.0.1:14550
+\end{Verbatim}
+
+Wait for \texttt{online system 1}.
+
+\paragraph{Step B.2 --- Load lab parameters again.}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param load course/labs/intro-arducopter-aero-y1/l3-closing-lab/params.parm
+\end{Verbatim}
+
+\paragraph{Step B.3 --- Run the orchestrator in Step B mode.}
+In Terminal 2:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+python3 course/labs/intro-arducopter-aero-y1/l3-closing-lab/run_lab.py --step B
+\end{Verbatim}
+
+The orchestrator will:
+\begin{enumerate}
+  \item Connect to SITL.
+  \item Wait for EKF to initialise.
+  \item Arm the vehicle.
+  \item Set mode to GUIDED.
+  \item Command takeoff to 30~m.
+  \item Hover. At t = 60 seconds after arming, the orchestrator sets \texttt{SIM\_GPS1\_ENABLE = 0}.
+  \item Watch for the EKF failsafe STATUSTEXT and mode change.
+  \item Wait for disarm.
+  \item Record timestamps and results.
+\end{enumerate}
+
+\paragraph{Step B.4 --- Observe the EKF failsafe sequence.}
+Within approximately 30 seconds of the GPS injection, you will see in the MAVProxy console:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+EKF variance: over thresholds
+\end{Verbatim}
+
+This is a \texttt{MAV\_SEVERITY\_CRITICAL} message (shown in red in Mission Planner; shown in the MAVProxy console). Shortly after, the mode changes to \texttt{LAND}:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+Mode:LAND
+\end{Verbatim}
+
+The vehicle descends and disarms.
+
+\paragraph{Step B.5 --- Inspect the dataflash log.}
+The orchestrator prints the log path when it exits. Inspect the ERR rows:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+mavlogdump.py --types ERR <path-to-log-file>
+\end{Verbatim}
+
+Look for a row with:
+\begin{itemize}
+  \item \texttt{Subsys = 16} (this is \texttt{LogErrorSubsystem::EKFCHECK}, value 16 per \citeline{libraries/AP_Logger/AP_Logger.h}{128})
+  \item \texttt{ECode = 2} (this is \texttt{LogErrorCode::EKFCHECK\_BAD\_VARIANCE}, value 2 per \citeline{libraries/AP_Logger/AP_Logger.h}{180})
+\end{itemize}
+
+The full \texttt{ERR} row will look similar to:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+ERR  {TimeUS : <timestamp>, Subsys : 16, ECode : 2}
+\end{Verbatim}
+
+\paragraph{Step B.6 --- Record your findings.}
+In your lab notebook, write:
+\begin{enumerate}
+  \item The time (in seconds after arming) at which \texttt{EKF variance: over thresholds} appeared.
+  \item The mode the vehicle was in when the failsafe fired.
+  \item The time (in seconds after arming) at which \texttt{Disarming motors} appeared.
+  \item The \texttt{ERR} row from the log (Subsys value and ECode value).
+  \item Which source line in \texttt{ArduCopter/ekf\_check.cpp} corresponds to each of these three events.
+\end{enumerate}
+
+\subsection*{Fault injection reference}
+
+\begin{center}\small
+\begin{tabular}{|p{2.5cm}|p{4.5cm}|p{7.0cm}|}\hline
+\textbf{Fault} & \textbf{File} & \textbf{What it does} \\ \hline
+GPS off & \texttt{faults/inject\_gps\_off.parm} & Sets \texttt{SIM\_GPS1\_ENABLE = 0} (disables simulated GPS) \\ \hline
+GPS restore & \texttt{faults/inject\_gps\_restore.parm} & Sets \texttt{SIM\_GPS1\_ENABLE = 1} (re-enables GPS) \\ \hline
+\end{tabular}
+\end{center}
+
+In Step B, the orchestrator applies \texttt{inject\_gps\_off.parm} automatically at t+60s. You can also apply it manually for exploration:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+param load course/labs/intro-arducopter-aero-y1/l3-closing-lab/faults/inject_gps_off.parm
+\end{Verbatim}
+
+To restore:
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+param load course/labs/intro-arducopter-aero-y1/l3-closing-lab/faults/inject_gps_restore.parm
+\end{Verbatim}
+
+\subsection*{Restoring state}
+
+After each step, the sim is in a clean-land disarmed state. To fully restore:
+
+\begin{enumerate}
+  \item Ensure \texttt{SIM\_GPS1\_ENABLE = 1} is set before re-arming:
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set SIM_GPS1_ENABLE 1
+\end{Verbatim}
+  \item Wait for the EKF to re-acquire the position estimate (console shows \texttt{EKF2 IMU0 is using GPS}).
+  \item Then re-arm if needed.
+\end{enumerate}
+
+For a fully clean state, restart SITL with \texttt{-w} (wipe EEPROM).
+
+\section*{What success looks like}
+
+\subsection*{Step A passes when:}
+\begin{enumerate}
+  \item The orchestrator exits with code 0.
+  \item No \texttt{MAV\_SEVERITY\_CRITICAL} statustext appeared during the run.
+  \item \texttt{Disarming motors} appeared within 180 seconds of arming.
+\end{enumerate}
+
+\subsection*{Step B passes when all of the following are true:}
+\begin{enumerate}
+  \item The orchestrator exits with code 0.
+  \item The console showed \texttt{EKF variance: over thresholds} (a red \texttt{CRITICAL} message) within 30 seconds of the GPS being disabled at t+60s.
+  \item The mode changed to \texttt{LAND} within 30 seconds of the GPS disable.
+  \item \texttt{Disarming motors} appeared within 240 seconds of the original arm command.
+  \item \texttt{mavlogdump.py --types ERR <log>} output contains a line with \texttt{Subsys : 16} and \texttt{ECode : 2}.
+\end{enumerate}
+
+The three events that connect the live console to the source code are:
+\begin{itemize}
+  \item \texttt{EKF variance: over thresholds} --- written by \citeline{ArduCopter/ekf_check.cpp}{86}.
+  \item \texttt{ERR \{Subsys: 16, ECode: 2\}} in the dataflash log --- written by \citeline{ArduCopter/ekf_check.cpp}{83}.
+  \item Mode change to LAND --- triggered by \citeline{ArduCopter/ekf_check.cpp}{89}.
+\end{itemize}
+
+\section*{Common mistakes and quick fixes}
+
+\textbf{1. The orchestrator cannot connect --- ``could not connect to SITL''}
+
+The orchestrator connects via UDP port 14550. SITL must have been launched with \texttt{--out udp:127.0.0.1:14550}. If you used the standard L1/L2 launch command without that flag, the orchestrator has no telemetry port to connect to. Stop SITL and relaunch with the L3 launch script or the full command in Step A.1.
+
+\textbf{2. \texttt{EKF variance: over thresholds} does not appear in Step B}
+
+The GPS disable may have been applied too late, or the EKF is still healthy because it is coasting on previously good estimates. The orchestrator applies the fault at approximately 6 seconds of wall-clock time (60 simulated seconds at speedup 10). If the fault was applied and the STATUSTEXT still did not appear within 30 seconds, check whether \texttt{SIM\_GPS1\_ENABLE} was actually written by looking at the orchestrator output for \texttt{param SIM\_GPS1\_ENABLE = 0.0000}.
+
+\textbf{3. \texttt{mavlogdump.py --types ERR} shows no output or shows \texttt{*.bin: no match}}
+
+The log file path must be a \texttt{*.BIN} file (uppercase) in the \texttt{logs/} subdirectory of wherever you ran SITL. Run the orchestrator and SITL from the repository root so that \texttt{logs/} is created there. If \texttt{mavlogdump.py} complains about the file, confirm the path printed by the orchestrator exists and has a non-zero size.
+
+\textbf{4. The orchestrator exits with code 1 during Step A --- ``unexpected CRITICAL statustext''}
+
+A CRITICAL statustext appeared during the clean run, which should not happen. The most likely cause is that a parameter from a previous failed Step B run left GPS disabled. Restart SITL with \texttt{-w} (wipe EEPROM) and reload \texttt{params.parm} before running Step A.
+
+\textbf{5. The mode change in Step B goes to \texttt{RTL} instead of \texttt{LAND}}
+
+This means \texttt{FS\_EKF\_ACTION} was not set correctly. The \texttt{params.parm} file sets \texttt{FS\_EKF\_ACTION 1} (LAND). Confirm the parameter was loaded with \texttt{param show FS\_EKF\_ACTION} in the MAVProxy terminal --- it should show \texttt{1.0}. If it shows \texttt{2.0} (RTL), reload the parameter file.
+
+\section*{Where to go next}
+
+This is the final lab of the course. After completing L3:
+\begin{itemize}
+  \item Your deliverable (the three recorded items from Step B.6) demonstrates that you can connect a live GCS event, a dataflash log row, and a source-code line --- the core skill for working with ArduPilot at \emph{applied} depth.
+  \item The downstream GNC plane and quadplane courses (\siblingplane\ and \siblingquadplane) build on this foundation. The EKF's internals (what ``variance'' actually means, the Kalman equations, the multi-lane EKF3 architecture) are covered there from first principles.
+\end{itemize}
+
+\textbf{Module reference:} this lab is the hands-on portion of \textbf{Module 2.4 --- Closing lab: scripted flight with a forced EKF failsafe} in the course markdown at \citefile{course/intro_arducopter_aero_y1.md}.
+
+\fi
+
+\end{document}

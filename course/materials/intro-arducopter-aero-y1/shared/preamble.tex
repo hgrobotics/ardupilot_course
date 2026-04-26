@@ -1,0 +1,35 @@
+% preamble.tex
+% Shared Beamer preamble for the slide decks. Loaded at the top of slides/dayN.tex.
+% Theme: metropolis (clean academic; sans-serif headings, restrained colour).
+% Aspect: 16:9 widescreen (locked by user).
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+
+\usetheme{metropolis}
+\setbeamertemplate{frame numbering}[fraction]
+\setbeamertemplate{footline}[frame number]
+
+% Hyperlinks: plan-pinned SHA URLs in slide-blue, no boxes.
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  linkcolor=,
+  citecolor=,
+  pdftitle={Introduction to ArduCopter for First-Year Aerospace Engineering Students},
+  pdfsubject={ArduPilot SITL on-ramp},
+  pdfauthor={material-builder},
+}
+
+% Preserve verbatim characters inside \nolinkurl-typeset cites.
+\usepackage{url}
+
+% Tighter list spacing (Beamer defaults are airy on 16:9).
+% enumitem's interaction with Beamer's enumerate label-recursion is fragile;
+% keep Beamer's native list spacing rather than fight it.
+
+% Block colours for instructor notes — metropolis-friendly muted palette.
+\setbeamercolor{block title}{bg=blue!10!white, fg=black}
+\setbeamercolor{block body}{bg=blue!4!white, fg=black}

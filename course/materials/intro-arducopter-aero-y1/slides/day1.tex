@@ -1,0 +1,514 @@
+% slides/day1.tex
+% Day 1 — Set up SITL, first flight, flight modes, parameters (4 h)
+% Single source for student + instructor builds (gated by version-flags.tex).
+\documentclass[aspectratio=169,11pt]{beamer}
+
+\input{../shared/version-flags.tex}
+\input{../shared/preamble.tex}
+\input{../shared/macros.tex}
+
+\title{Introduction to ArduCopter\\\large Day 1 --- SITL setup, first flight, modes, parameters}
+\subtitle{First-Year Aerospace Engineering On-Ramp}
+\date{4 h, in-lab}
+\author{}
+\institute{\copyrightline}
+
+\begin{document}
+
+%==============================================================================
+\begin{frame}
+  \titlepage
+  \ifinstructor
+    \footnotesize Instructor build. Speaker notes, FAQs, pacing, and advanced-course pointers are visible.
+  \fi
+\end{frame}
+
+\begin{frame}{What today gets you}
+  By the end of Day 1, every student has:
+  \begin{itemize}
+    \item ArduPilot SITL running on their own laptop.
+    \item Flown a simulated quadrotor: arm, take off, hover, switch mode, land, disarm --- all from the MAVProxy command line.
+    \item Changed a parameter and watched the simulator behave differently.
+  \end{itemize}
+  \vfill
+  Pure simulation. No real flight, no bench hardware.
+  \insttiming{Frame for the day. 1 min. Reassure the room: most of Day 1 is hands-on.}
+\end{frame}
+
+\begin{frame}{Acronyms used today}
+  Defined inline at first use; this slide is a reference.
+  \begin{itemize}
+    \item \textbf{SITL} --- Software In The Loop. Same autopilot binary, on your laptop.
+    \item \textbf{GCS} --- Ground Control Station. We use \textsc{MAVProxy} (text only).
+    \item \textbf{MAVLink} --- the binary message protocol between autopilot and GCS.
+    \item \textbf{HAL} --- Hardware Abstraction Layer. The shim that lets the same code run on a Pixhawk and on your laptop.
+    \item \textbf{IMU} --- Inertial Measurement Unit. Accel + gyro.
+    \item \textbf{EKF} --- Extended Kalman Filter. The state estimator (black box for this course).
+    \item \textbf{RTL} --- Return To Launch (a flight mode).
+  \end{itemize}
+  \instnote{Acronym list is also in the printed handout. Do not read it aloud --- point to it once.}
+\end{frame}
+
+%==============================================================================
+\section{Module 1.1 --- What is an autopilot? (30 min, survey)}
+
+\begin{frame}{Module 1.1 --- What is an autopilot, ArduPilot, SITL?}
+  \textbf{30 min, lecture + demo, \emph{survey} depth.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Define autopilot, GCS, ground/air segment in plain English.
+    \item Place ArduPilot in the open-source landscape at one slide of depth.
+    \item Same binary flies real hardware and SITL --- only the HAL backend differs.
+    \item The codebase has safety-critical conventions (compile-time flags, embedded constraints) we will see throughout.
+  \end{enumerate}
+  \insttiming{Module budget 30 min. Slides 4--12 = 8 slides. Aim 3 min/slide. Demo at the end ($\sim$5 min).}
+\end{frame}
+
+\begin{frame}{What an autopilot does, in one sentence}
+  An autopilot is the software that decides, hundreds of times per second, what each motor should do so the vehicle behaves the way the pilot or the mission asked for.
+  \vfill
+  On a quadrotor: read sensors $\rightarrow$ work out where you are and how you are moving $\rightarrow$ compare to what was requested $\rightarrow$ write four numbers (one per motor) to the speed controllers. Forever.
+\end{frame}
+
+\begin{frame}{Ground / air split}
+  \begin{itemize}
+    \item \textbf{Air side}: the flight controller bolted to the airframe. Runs ArduPilot.
+    \item \textbf{Ground side}: laptop or tablet running a GCS. Watches telemetry, changes parameters, sends commands.
+  \end{itemize}
+  \vfill
+  Our GCS in this course: \textsc{MAVProxy} (command line).\\
+  Mission Planner / QGroundControl exist, are graphical --- we do not use them.
+  \instfaq{Why not use a graphical GCS?}{Locked decision D6 --- MAVProxy is the canonical CLI for ArduPilot dev, and it forces students to read text instead of clicking buttons. Text is what they will read in the GNC course later.}
+\end{frame}
+
+\begin{frame}{ArduPilot in the landscape (half a slide)}
+  \begin{itemize}
+    \item Open source. One of the two large open-source autopilot stacks (the other is PX4).
+    \item Targets small unmanned vehicles.
+    \item One source tree, many vehicles: Copter, Plane, Sub, Rover, AntennaTracker, Blimp.
+    \item We spend the entire course in the Copter half.
+  \end{itemize}
+  \vfill
+  Do not worry about governance, release cadence, or community structure. One slide is enough.
+  \instnote{Resist deepening this. The course is about \emph{using} the software, not its politics.}
+\end{frame}
+
+\begin{frame}{The handoff: SITL is the \emph{same} binary}
+  The single most important conceptual hand-off in this module:\\[1ex]
+  \begin{quote}
+    The ArduPilot code we read together also runs \emph{unchanged} on a real flight controller.
+  \end{quote}
+  Difference between \textbf{Pixhawk} and \textbf{your laptop}: only the HAL backend underneath.
+  \begin{itemize}
+    \item \codepath{AP\_HAL\_ChibiOS} --- STM32 flight controllers
+    \item \codepath{AP\_HAL\_SITL} --- the simulator
+    \item \codepath{AP\_HAL\_Linux} --- Linux SBCs (Navio2, etc.)
+    \item \codepath{AP\_HAL\_ESP32} --- ESP32 boards
+  \end{itemize}
+  This is why a SITL-only course teaches you something useful about real flight code.
+  \instadvanced{The plane / quadplane GNC courses lean hard on this fact when introducing the build system. Re-citing this slide is fair game on Day 1 of either downstream course.}
+\end{frame}
+
+\begin{frame}{Two pieces of context to carry forward}
+  \textbf{ArduPilot is safety-critical software.} The code we will read flies real vehicles. The community's working rule: every change must be correct, tested, and reviewable by a human maintainer before it ships. \emph{That posture is why the codebase looks the way it does} --- verbose names, compile-time feature flags, a hardware abstraction layer between the autopilot and the silicon. None of that is decoration; it is the cost of running on something that can fall out of the sky.
+
+  \medskip
+  \textbf{Architecture in one breath:} vehicles ($\,\sim$6 dirs at top level) + libraries (sensors, controllers, services) + HAL (\codepath{AP\_HAL\_ChibiOS}, \codepath{AP\_HAL\_ESP32}, \codepath{AP\_HAL\_Linux}, \codepath{AP\_HAL\_SITL}). Compile-time flags (\codepath{\#if AP\_<FEATURE>\_ENABLED}) let the same tree build a tiny embedded firmware \emph{or} a fat simulator binary.
+  \instnote{Read these two paragraphs aloud. The students will not retain detail; they will retain the framing. Stop here if running long.}
+\end{frame}
+
+\begin{frame}{Code-reading: open this one file}
+  One anchor. Open it, read the heading line, notice the class name, move on.
+  \begin{itemize}
+    \item \citeline{ArduCopter/Copter.h}{181} --- one line: \texttt{class Copter : public AP\_Vehicle \{}. We will return to this file all course.
+  \end{itemize}
+  \instnote{Do \emph{not} click into the file on the projector unless asked. Students should open in their own editors.}
+\end{frame}
+
+\begin{frame}{Module 1.1 demo --- watch only}
+  Instructor types on the projector:
+  \begin{itemize}
+    \item[\$] \texttt{Tools/autotest/sim\_vehicle.py -v ArduCopter --console --map}
+  \end{itemize}
+  Three windows appear. Students watch only --- about 5 min.\\[1ex]
+  Goal: a \textbf{HEARTBEAT} arrives at the GCS, the map renders the vehicle, the console shows \texttt{online system 1}.\\[1ex]
+  In Module 1.2 you will reproduce this on your own laptop.
+  \insttiming{$\sim$5 min. If your build is stale, this is when you find out --- pre-warm the workspace before class.}
+\end{frame}
+
+%==============================================================================
+\section{Module 1.2 --- Set up your laptop (1 h, lab)}
+
+\begin{frame}{Module 1.2 --- Set up your laptop: install, build, launch SITL}
+  \textbf{1 h, lab, \emph{applied} depth.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Run the prereqs installer on Ubuntu (or macOS / Windows-WSL equivalent) without panicking on the long output.
+    \item Clone ArduPilot with submodules; \texttt{./waf configure --board sitl \&\& ./waf copter}.
+    \item Launch SITL with \texttt{Tools/autotest/sim\_vehicle.py -v ArduCopter --console --map}.
+    \item Recognise the three windows: console, command, map.
+  \end{enumerate}
+  \insttiming{Module is mostly waiting for apt + the build. TA-coverage is high during this hour. Plan slides 13--20 read fast --- the lab is where the time goes.}
+\end{frame}
+
+\begin{frame}{Frame for the hour}
+  \begin{itemize}
+    \item Most of the hour is waiting for \texttt{apt} and the build.
+    \item Do not panic at long output. The script tells you what it is doing.
+    \item If apt cascades errors across unrelated packages on a fresh Ubuntu, raise your hand. The TA will diagnose and switch your apt mirror.
+  \end{itemize}
+  \instfaq{What do students do while waiting for the build?}{Have them open the cited files in an editor and look at them. The Module 1.1 anchors are still relevant.}
+\end{frame}
+
+\begin{frame}{Reference docs (do not read end-to-end --- bookmark)}
+  \begin{itemize}
+    \item \citefile{BUILD.md} --- Waf in depth (boards, build groups, debug, Docker). Reference for any build error you do not recognise.
+    \item \citefile{Tools/environment_install/install-prereqs-ubuntu.sh} --- the Ubuntu prereqs installer. TAs run this for you; do not read it line-by-line during the lab.
+  \end{itemize}
+  \instnote{Resist the urge to walk these. The labs are the hour, not the docs.}
+\end{frame}
+
+\begin{frame}{What \texttt{-v ArduCopter} actually does --- two anchors}
+  SITL is launched by a Python script. Two lines are enough to see how \texttt{-v ArduCopter} plugs in.
+  \begin{itemize}
+    \item \citeline{Tools/autotest/sim_vehicle.py}{287} --- the literal string \texttt{'ArduCopter.elf',}. This is the binary the launcher will look for under \codepath{build/sitl/bin/} when you pass \texttt{-v ArduCopter}.
+    \item \citerange{Tools/autotest/sim_vehicle.py}{1073}{1085} --- the option-parser block for \texttt{-v}/\texttt{--vehicle} and \texttt{-f}/\texttt{--frame}. Read the \texttt{help=} strings only.
+  \end{itemize}
+  You do not need to know what \texttt{optparse} is. You need to recognise that this is where the option you type lands.
+\end{frame}
+
+\begin{frame}{Lab L1 --- ``First SITL launch'' (steps 1--2)}
+  In order, on your own laptop:
+  \begin{enumerate}
+    \item \textbf{Run the prereqs installer.} Ubuntu: \\
+      \texttt{Tools/environment\_install/install-prereqs-ubuntu.sh}\\
+      Expect 5--15 min of apt traffic. macOS / Windows-WSL students follow the equivalent script in the same dir. TAs will direct.
+    \item \textbf{Clone with submodules.}\\
+      \texttt{git clone --recurse-submodules https://github.com/ArduPilot/ardupilot.git}\\
+      \texttt{cd ardupilot}
+  \end{enumerate}
+  TA may have a local mirror --- ask.
+\end{frame}
+
+\begin{frame}{Lab L1 --- ``First SITL launch'' (steps 3--4)}
+  \begin{enumerate}\setcounter{enumi}{2}
+    \item \textbf{Configure and build SITL} (from the repo root):\\
+      \quad \texttt{./waf configure --board sitl}\\
+      \quad \texttt{./waf copter}\\
+      Configure $\sim$30 s. First build 2--5 min. Reruns are incremental and fast.\\
+      \textbf{Never} run \texttt{waf} with \texttt{sudo}.
+    \item \textbf{Launch SITL with the GCS attached:}\\
+      \quad \texttt{Tools/autotest/sim\_vehicle.py -v ArduCopter --console --map}
+  \end{enumerate}
+  Three windows appear:
+  \begin{itemize}
+    \item MAVProxy \textbf{console} --- text status (altitude, mode, battery).
+    \item MAVProxy \textbf{command} terminal --- where you type.
+    \item \textbf{Map} --- vehicle marker at the SITL default location.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Lab L1 --- pass criterion}
+  The TA's verdict:
+  \begin{itemize}
+    \item A \textbf{HEARTBEAT} MAVLink message arrives at the GCS.
+    \item The map renders the vehicle.
+    \item The console prints \texttt{STATUSTEXT: APM:Copter ...} and then \texttt{online system 1} within $\sim$30 s.
+  \end{itemize}
+  If both happen, you pass.
+  \instfaq{Build fails on a fresh Ubuntu 26.04 with cascading apt errors}{Almost always a stale mirror, not the script. Verify with \texttt{apt-cache madison <pkg>} against \texttt{archive.ubuntu.com}; if the mirror is behind, switch \codepath{/etc/apt/sources.list.d/ubuntu.sources} to \codepath{archive.ubuntu.com}.}
+\end{frame}
+
+\begin{frame}{The MAVProxy commands you will use this course}
+  Small subset. Listed as we need them, not all up front.
+  \begin{itemize}
+    \item \texttt{mode <NAME>} --- request a flight-mode change (Module 1.3).
+    \item \texttt{arm throttle} --- arm motors (Module 1.3).
+    \item \texttt{rc 3 1700} --- push throttle stick to 1700~$\mu$s PWM (Module 1.3).
+    \item \texttt{param show <NAME>} --- read a parameter (Modules 1.5, 2.4).
+    \item \texttt{param set <NAME> <VALUE>} --- write a parameter (Modules 1.5, 2.4).
+  \end{itemize}
+  No other MAVProxy command appears in this course's labs.
+\end{frame}
+
+%==============================================================================
+\section{Module 1.3 --- Your first flight (45 min, lab)}
+
+\begin{frame}{Module 1.3 --- Your first flight: arm, take off, land, disarm}
+  \textbf{45 min, lab, \emph{applied} depth.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Use \texttt{mode}, \texttt{arm throttle}, \texttt{rc 3 1700}, \texttt{mode LAND}.
+    \item Read the textual telemetry: altitude, battery, mode.
+    \item Recognise \flmode{STABILIZE} and \flmode{LAND} by behaviour, not yet by source.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{The mode you start in: \flmode{STABILIZE}}
+  When SITL launches, the simulated copter sits on the ground in \flmode{STABILIZE}.
+  \begin{itemize}
+    \item Keeps the vehicle level when you let go of roll/pitch.
+    \item Throttle stick goes \emph{straight through} to motor thrust.
+    \item \textbf{No} altitude hold. \textbf{No} position hold.
+    \item Push the stick forward $\rightarrow$ vehicle tilts and accelerates. Let go $\rightarrow$ stops tilting but keeps drifting.
+  \end{itemize}
+  Closest copter mode to ``manual flight.''
+\end{frame}
+
+\begin{frame}{The mode IDs --- one cite, recognise the shape}
+  \citerange{ArduCopter/mode.h}{77}{109} --- master enumeration of every Copter flight mode.\\[1ex]
+  Three things to notice:
+  \begin{enumerate}
+    \item Each mode is a name plus a number: \flmode{STABILIZE} = 0, \flmode{ALT\_HOLD} = 2, \flmode{LAND} = 9.
+    \item One-line comments next to each mode describe what it does.
+    \item The mode number is what gets stored in \param{FLTMODE1} etc. (we meet that in Module 1.5).
+  \end{enumerate}
+  Do not memorise the table --- recognise its shape.
+\end{frame}
+
+\begin{frame}{The mode body, at survey depth}
+  \citerange{ArduCopter/mode_stabilize.cpp}{9}{64} --- \texttt{ModeStabilize::run}. Read the comment at line 11:\\[0.5ex]
+  \emph{``stabilize\_run --- runs the main stabilize controller; should be called at 100hz or more.''}
+  \vfill
+  That is the contract. Every flight mode has a \texttt{run()} method called at high rate.\\
+  Inside, the mode reads sticks $\rightarrow$ decides target $\rightarrow$ hands down to attitude controller.\\[1ex]
+  Notice in the lower half of the function: a \texttt{switch} on motor spool state (\texttt{SHUT\_DOWN}, \texttt{GROUND\_IDLE}, \texttt{THROTTLE\_UNLIMITED}, \dots). Spool state is the autopilot's safety gate between ``motors off'' and ``motors free to spin.'' Recognising the names is enough.
+  \instnote{Do not unpack the spool-state machine. If a student asks what spool state ``actually does'', defer to their own GNC course later --- we are at survey.}
+\end{frame}
+
+\begin{frame}{Lab L2 --- ``First flight (STAB $\rightarrow$ LAND)''}
+  In the running SITL session (from Lab L1), in the MAVProxy command terminal, type these one at a time, watch the console after each:
+  \begin{enumerate}
+    \item \texttt{mode STABILIZE} --- expect mode-change accepted (you usually start there).
+    \item \texttt{arm throttle} --- motors arm; expect \texttt{Motors armed}.
+    \item \texttt{rc 3 1700} --- throttle stick to 1700~$\mu$s. Lift-off; altitude rises on the console.
+    \item Wait until altitude $> 10$~m.
+    \item \texttt{mode LAND} --- autopilot flies the descent itself.
+    \item Wait. Console prints \texttt{LAND complete} then \texttt{Disarming motors}.
+  \end{enumerate}
+  \textbf{Pass criterion}: \texttt{Disarming motors} statustext within 90 s of \texttt{arm throttle}.
+\end{frame}
+
+\begin{frame}{If something feels wrong}
+  Drift off the screen? Simulator hangs?
+  \begin{itemize}
+    \item Close the SITL window.
+    \item Relaunch via Lab L1 step 4.
+  \end{itemize}
+  SITL is cheap to restart. Do not debug --- restart.
+  \insttiming{Lab L2 budget 45 min. Most students finish in 15 min. The remaining 30 min is buffer for restarts and observation. Don't fill it with extra content.}
+\end{frame}
+
+%==============================================================================
+\section{Module 1.4 --- Flight modes (45 min, survey)}
+
+\begin{frame}{Module 1.4 --- Flight modes from a pilot's view}
+  \textbf{45 min, lecture + demo, \emph{survey} depth.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Sort copter modes into three buckets; place at least one mode in each from memory.
+    \item Explain a mode prerequisite: ``\flmode{RTL} needs a position estimate; \flmode{STABILIZE} does not.''
+    \item Recognise that mode switching can be \emph{denied} by the autopilot.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{The three-bucket taxonomy (verbatim from the plan)}
+  \begin{itemize}
+    \item \textbf{Manual} --- \flmode{STABILIZE}, \flmode{ACRO}. Stick goes (almost) straight to motor outputs. Autopilot levels but does not hold position or altitude. Let go $\rightarrow$ vehicle drifts.
+    \item \textbf{Stabilized-with-altitude} --- \flmode{ALT\_HOLD}. Autopilot holds altitude with the barometer (and GPS when available). Pilot still flies horizontally. Let go vertical $\rightarrow$ no drift; let go horizontal $\rightarrow$ drift.
+    \item \textbf{Autonomous} --- \flmode{AUTO}, \flmode{GUIDED}, \flmode{RTL}, \flmode{LAND}. Autopilot decides. \flmode{AUTO} follows a stored mission; \flmode{GUIDED} takes commands from the GCS; \flmode{RTL} flies home; \flmode{LAND} descends in place.
+  \end{itemize}
+  \instnote{Insist on \emph{this} grouping, not the historical numerical order in \texttt{mode.h}. The buckets are the bit students need to keep.}
+\end{frame}
+
+\begin{frame}{Why these three buckets, not the \texttt{mode.h} order}
+  \citerange{ArduCopter/mode.h}{77}{109} (re-cited) lists modes in numerical order --- which is \emph{historical}.\\[1ex]
+  Use the three-bucket taxonomy when reasoning about modes. The numerical IDs only matter when you set \param{FLTMODE1} etc. (Module 1.5).
+  \vfill
+  \flmode{LOITER} is intentionally \emph{not} on this course's mode tour. The 8-hour budget does not have room for a third stop. You meet \flmode{LOITER} in the downstream GNC courses.
+  \instadvanced{The plane / quadplane GNC courses cover \flmode{LOITER}, \flmode{POSHOLD}, and the position-hold family in detail. Reference \siblingplane\ Day 2 and \siblingquadplane\ Day 3.}
+\end{frame}
+
+\begin{frame}{The \texttt{init} / \texttt{run} pattern --- shared by every mode}
+  \citerange{ArduCopter/mode_althold.cpp}{9}{22} --- \texttt{ModeAltHold::init}. Notice line 12:\\
+  \emph{``althold\_init --- initialise althold controller.''}
+  \begin{itemize}
+    \item \texttt{init()} is called \textbf{once} when the mode is entered.
+    \item \texttt{run()} is called at \textbf{high rate} while the mode is active.
+    \item Notice calls into \texttt{pos\_control} (the position controller): \texttt{D\_init\_controller}, \texttt{D\_set\_max\_speed\_accel\_m}.
+    \item \texttt{init()} is the place where the mode hands speed and acceleration limits to its controller.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{The \texttt{run()} body --- survey only}
+  \citerange{ArduCopter/mode_althold.cpp}{26}{104} --- \texttt{ModeAltHold::run}.\\[1ex]
+  Walk at survey depth. Notice four state-machine names:
+  \begin{itemize}
+    \item \texttt{MotorStopped}
+    \item \texttt{Landed\_Pre\_Takeoff}
+    \item \texttt{Takeoff}
+    \item \texttt{Flying}
+  \end{itemize}
+  Each state decides differently what to do with the pilot's stick.
+  \instnote{Do not unpack the algebra in any branch --- we are at survey. If a student starts solving inside a branch, redirect to the GNC course.}
+\end{frame}
+
+\begin{frame}{Mode switching can be \emph{refused}}
+  \citerange{ArduCopter/mode.cpp}{313}{396} --- \texttt{Copter::set\_mode}. The function the autopilot calls every time \emph{anything} (pilot, GCS, RC switch) asks for a mode change.\\[1ex]
+  Two prerequisite checks at \emph{applied} depth:
+  \begin{itemize}
+    \item \citeline{ArduCopter/mode.cpp}{394} --- \texttt{mode\_change\_failed(new\_flightmode, "requires position");}\\
+      If you ask for a mode that needs to know where it is (e.g. \flmode{RTL}) but the EKF cannot give a position, the change is denied. You see this exact message.
+    \item \citeline{ArduCopter/mode.cpp}{404} --- \texttt{mode\_change\_failed(new\_flightmode, "need alt estimate");}\\
+      Same shape, for altitude.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{The takeaway}
+  When MAVProxy reports a mode-change failure, the autopilot is doing exactly what you would want:\\[1ex]
+  \begin{quote}
+    It refuses to enter a mode whose prerequisites it cannot satisfy.
+  \end{quote}
+  \vfill
+  This is the same posture as the pre-arm checks (Day 2, Module 2.3) and as the failsafes (Module 2.3).\\
+  Theme: the autopilot prefers to refuse than to be wrong.
+\end{frame}
+
+\begin{frame}{Module 1.4 demo --- watch the refusal happen}
+  Instructor types on the projector:
+  \begin{itemize}
+    \item \texttt{param set SIM\_GPS\_DISABLE 1}
+    \item \texttt{mode RTL}
+  \end{itemize}
+  Expect the autopilot to refuse with \texttt{requires position}.\\[1ex]
+  Students try the same on their own SITL session.\\[1ex]
+  Then on the projector to restore:
+  \begin{itemize}
+    \item \texttt{param set SIM\_GPS\_DISABLE 0}
+  \end{itemize}
+  $\sim$10 min total inside this module.
+  \insttiming{If a student's SIM\_GPS\_DISABLE 0 was forgotten, it bites them on Day 2's failsafe lab. Spot-check.}
+\end{frame}
+
+%==============================================================================
+\section{Module 1.5 --- Parameters (30 min, applied)}
+
+\begin{frame}{Module 1.5 --- Parameters: ArduPilot's configuration surface}
+  \textbf{30 min, lecture + demo, \emph{applied} depth.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Define a parameter as a runtime-configurable value, persistent across reboots.
+    \item Recognise \texttt{@Param}, \texttt{@DisplayName}, \texttt{@Description}, \texttt{@Range}, \texttt{@Units}.
+    \item Run \texttt{param show} / \texttt{param set} from MAVProxy.
+    \item Find which file declares a parameter using \texttt{grep} on its name.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{What a parameter is}
+  A parameter is:
+  \begin{itemize}
+    \item A \emph{named} variable.
+    \item Stored on the autopilot.
+    \item Survives a reboot.
+    \item Read or changed from the GCS at runtime.
+  \end{itemize}
+  Parameters are \textbf{not} compiled into the binary. The binary reads them from non-volatile storage at boot.\\[1ex]
+  Two flight controllers running the same firmware can fly very differently:\\
+  \emph{same code, different parameters.}
+\end{frame}
+
+\begin{frame}{The \texttt{@Param} annotation block}
+  \citerange{ArduCopter/Parameters.cpp}{44}{51} --- the eight lines that declare \texttt{PILOT\_THR\_FILT}: seven \texttt{// @...} comment lines plus the \texttt{GSCALAR(...)} declaration. This is the canonical shape.\\[1ex]
+  Keys to recognise:
+  \begin{itemize}
+    \item \texttt{@Param} --- short name, capped at 16 characters.
+    \item \texttt{@DisplayName} --- human-readable name.
+    \item \texttt{@Description} --- detailed text.
+    \item \texttt{@Values} or \texttt{@Range} --- allowed values.
+    \item \texttt{@Units} --- e.g. \texttt{m}, \texttt{Hz}, \texttt{deg}, \texttt{s}.
+    \item \texttt{@User} --- \texttt{Standard} or \texttt{Advanced}.
+  \end{itemize}
+  When you read parameter docs in the wiki or in Mission Planner, this is where the text comes from.
+\end{frame}
+
+\begin{frame}{A real parameter table}
+  \citerange{ArduCopter/Parameters.cpp}{33}{67} --- start of the \texttt{Copter::var\_info[]} array. Every parameter Copter owns.\\[1ex]
+  Read the first few entries:
+  \begin{itemize}
+    \item \param{FORMAT\_VERSION} --- EEPROM format version.
+    \item \param{PILOT\_THR\_FILT} --- throttle filter cutoff (Hz).
+    \item \param{PILOT\_THR\_BHV} --- throttle stick behavior bitmask.
+    \item \param{GCS\_PID\_MASK} --- which PID-tuning streams to send to the GCS.
+  \end{itemize}
+  Notice each entry has a full \texttt{@Param} block above it. Notice \texttt{GSCALAR(...)} --- the macro that registers the variable. Recognise the shape; do not memorise.
+\end{frame}
+
+\begin{frame}{How RC switch positions become flight modes}
+  \citerange{ArduCopter/Parameters.cpp}{149}{191} --- \param{FLTMODE1}--\param{FLTMODE6} and \param{FLTMODE\_CH}.\\[1ex]
+  Mechanism:
+  \begin{enumerate}
+    \item Autopilot watches PWM on RC channel \param{FLTMODE\_CH}.
+    \item Maps that PWM into one of six bands.
+    \item Each band reads the corresponding \param{FLTMODE<n>}, which holds a flight-mode \emph{number} from the enum we read in Module 1.3.
+  \end{enumerate}
+  So \param{FLTMODE1} = 0 + your switch in the lowest band $\Rightarrow$ \flmode{STABILIZE} (= 0).\\[1ex]
+  This is how a single 3-position switch becomes ``six modes I can choose from.''
+  \instfaq{Why six? My transmitter has more positions.}{Six is the historical max. Six PWM bands evenly spaced across the channel range. Newer transmitters can multiplex via mixers --- not in scope.}
+\end{frame}
+
+\begin{frame}{Hands-on --- watch a parameter change behaviour}
+  In the running SITL, in the MAVProxy command terminal:
+  \begin{itemize}
+    \item[\texttt{>}] \texttt{param show SIM\_WIND\_SPD}
+  \end{itemize}
+  Default is \texttt{0}.
+  \begin{itemize}
+    \item[\texttt{>}] \texttt{param set SIM\_WIND\_SPD 5}
+  \end{itemize}
+  Watch the simulated copter's hover wobble change as the simulator fakes a 5~m/s wind.
+  \begin{itemize}
+    \item[\texttt{>}] \texttt{param set SIM\_WIND\_SPD 0}
+  \end{itemize}
+  Restore. $\sim$5 min total.
+  \vfill
+  This is the ``parameters change behaviour'' payload --- there is no separate wind / WPNAV\_SPEED lab in this course.
+\end{frame}
+
+%==============================================================================
+\section{Day 1 wrap-up}
+
+\begin{frame}{Day 1 buffer / Q\&A (30 min)}
+  Used for:
+  \begin{itemize}
+    \item Apt-mirror failures.
+    \item Windows-WSL path issues.
+    \item Students whose build did not finish in time.
+    \item Any leftover questions from the day.
+  \end{itemize}
+  \instnote{Apt-mirror failures: TAs handle directly --- check \texttt{apt-cache madison} against \texttt{archive.ubuntu.com}, switch the mirror if it is behind.}
+  \insttiming{Buffer is the only slack on the day. Resist using it for content.}
+\end{frame}
+
+\begin{frame}{Day 1 totals}
+  \begin{itemize}
+    \item Module times: 0.5 + 1.0 + 0.75 + 0.75 + 0.5 = \textbf{3.5 h modules}.
+    \item Buffer: 0.5 h.
+    \item \textbf{Total: 4.0 h.}
+  \end{itemize}
+  Hands-on share: $\sim$0.05 h (1.1) + 1.0 h (1.2) + 0.75 h (1.3) + $\sim$0.15 h (1.4) + $\sim$0.1 h (1.5) $\approx$ \textbf{2.05 h / 3.5 h $\approx$ 59\%}.
+  \vfill
+  Tomorrow: under-the-hood --- sensors, scheduler, the data path, failsafes, closing lab.
+\end{frame}
+
+\begin{frame}{End of Day 1 --- what you have done}
+  \begin{itemize}
+    \item SITL runs on your laptop.
+    \item You armed, took off, switched mode, landed, disarmed --- from MAVProxy.
+    \item You know the three mode buckets and have seen a mode change be refused.
+    \item You changed a parameter and watched the simulator behave differently.
+  \end{itemize}
+  \vfill
+  \begin{center}\large See you tomorrow.\end{center}
+\end{frame}
+
+\end{document}
