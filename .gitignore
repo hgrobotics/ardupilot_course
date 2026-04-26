@@ -174,3 +174,17 @@ env.bak/
 venv.bak/
 autotest_result_*_junit.xml
 .python-version
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
+
+# Course pipeline transient artifacts
+# - Lab test-run captures (transcripts, SITL stdout, GCS captures)
+# - Per-lab SITL stdout from headless test harnesses
+# - Python bytecode from running lab harnesses
+# - Per-machine Claude Code overrides
+course/labs/*/runs/
+course/labs/*/*/sitl.log
+__pycache__/
+.claude/settings.local.json
