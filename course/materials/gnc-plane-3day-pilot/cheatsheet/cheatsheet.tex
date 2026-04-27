@@ -1,0 +1,37 @@
+% cheatsheet/cheatsheet.tex
+% Single-source cheatsheet, gated student vs instructor by version-flags.tex.
+% Two-column multicol layout (audience is dense; one column wastes space; four
+% would be too tight for the file paths in the cite anchors).
+\documentclass[a4paper,9pt,landscape]{extarticle}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, landscape, margin=1.2cm]{geometry}
+\usepackage{multicol}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=1pt, topsep=2pt, leftmargin=*}
+\setlist[enumerate]{itemsep=1pt, topsep=2pt, leftmargin=*}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  pdftitle={GNC Plane 3-Day Pilot --- Cheat Sheet},
+}
+\usepackage{url}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+\usepackage{titlesec}
+\titleformat*{\section}{\large\bfseries}
+\titleformat*{\subsection}{\normalsize\bfseries}
+\titlespacing*{\section}{0pt}{6pt}{2pt}
+\titlespacing*{\subsection}{0pt}{4pt}{1pt}
+
+\input{../shared/macros.tex}
+
+\renewcommand{\instnote}[1]{\ifinstructor\begin{tcolorbox}[colback=blue!4!white,colframe=blue!40!black,title=Instructor note,breakable,fonttitle=\small,fontupper=\footnotesize]#1\end{tcolorbox}\fi}
+\renewcommand{\adoptionsidebar}[1]{\begin{tcolorbox}[colback=cyan!4!white,colframe=cyan!50!black,title=Adoption,breakable,fonttitle=\small,fontupper=\footnotesize]#1\end{tcolorbox}}
+
+\input{cheatsheet-body.tex}

@@ -1,0 +1,348 @@
+% lab-guides/l5-capstone.tex
+% Single source for Lab L5 student + instructor PDFs.
+% Per-engineer assignments (Eng 1=AP_L1_Control, Eng 2=AP_TECS, Eng 3=AP_NavEKF3
+% lane-health subset) per the user's instruction; assignments are surfaced in
+% both editions so engineers know which sub-dir is theirs.
+\documentclass[a4paper,11pt,twoside]{article}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, margin=2.2cm]{geometry}
+\usepackage{titling}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\setlist[enumerate]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  pdftitle={Lab L5 --- Capstone Subsystem Extraction},
+}
+\usepackage{url}
+\usepackage{fancyvrb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+\usepackage{array}
+\usepackage{longtable}
+
+\input{../shared/macros.tex}
+
+\renewcommand{\instnote}[1]{\ifinstructor\begin{tcolorbox}[colback=blue!4!white,colframe=blue!40!black,title=Instructor note,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\insttiming}[1]{\ifinstructor\begin{tcolorbox}[colback=orange!5!white,colframe=orange!50!black,title=Pacing,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\instfaq}[2]{\ifinstructor\begin{tcolorbox}[colback=green!4!white,colframe=green!40!black,title=Anticipated Q: #1,breakable]#2\end{tcolorbox}\fi}
+\renewcommand{\instadvanced}[1]{\ifinstructor\begin{tcolorbox}[colback=violet!5!white,colframe=violet!50!black,title=Advanced material pointer,breakable]#1\end{tcolorbox}\fi}
+
+\title{Lab L5 --- Capstone: Subsystem Extraction\\
+  \large \ifinstructor Instructor Guide\else Student Guide\fi}
+\author{\copyrightline}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Codebase reference:} branch \texttt{GNC-0.1} of \href{\repourl}{\nolinkurl{hgrobotics/ardupilot_course}}. Every link in this lab guide opens the cited file at the named line on GitHub.
+
+\bigskip
+
+\ifinstructor
+% =============================================================================
+% INSTRUCTOR EDITION
+% =============================================================================
+
+\begin{tcolorbox}[colback=red!5!white,colframe=red!40!black,title=Instructor edition]
+This is the instructor edition. Do \textbf{not} hand this to the engineers --- the student edition is the same source compiled without the instructor flag.
+\end{tcolorbox}
+
+\section*{Lab summary for the instructor}
+
+\textbf{Learning objective:} Each engineer independently extracts one ArduPilot subsystem into a standalone gtest project, demonstrating mastery of the four extraction-seam patterns from M10 (HAL boundary, \texttt{AP\_Param} isolation, AHRS interface decoupling, \texttt{AP\_Logger} stub-out). The 5-min presentation at end demonstrates the engineer can explain the coupling they found and the stub they wrote to cross it.
+
+\textbf{Depth:} internals. Engineers are reading real subsystem source and writing real stubs, not filling in blanks.
+
+\textbf{Feed-forward:} This is the last lab. Result is a working extraction template the engineer can take back to their proprietary codebase.
+
+\section*{Per-engineer capstone allocations (assigned, swappable before M11 starts)}
+
+\begin{itemize}
+  \item \textbf{Engineer 1} $\rightarrow$ \texttt{AP\_L1\_Control} extraction\\ \codepath{course/labs/gnc-plane-3day-pilot-l5-capstone/eng1-l1/}
+  \item \textbf{Engineer 2} $\rightarrow$ \texttt{AP\_TECS} extraction\\ \codepath{course/labs/gnc-plane-3day-pilot-l5-capstone/eng2-tecs/}
+  \item \textbf{Engineer 3} $\rightarrow$ \texttt{AP\_NavEKF3} lane-health subset extraction\\ \codepath{course/labs/gnc-plane-3day-pilot-l5-capstone/eng3-ekf-lane/}
+\end{itemize}
+
+\section*{Pacing}
+
+Total: 2.5 h (150 min).
+
+\begin{center}\small
+\begin{tabular}{|p{6cm}|p{4cm}|}\hline
+\textbf{Phase} & \textbf{Time} \\ \hline
+Introduction / setup (M11 recap of the four seams) & 15 min \\ \hline
+Scaffold build verification for all 3 engineers & 10 min \\ \hline
+Extraction work (independent, 1:1 instructor available) & 80 min \\ \hline
+Early finishers: stretch (run extracted subsystem in a loop) & 15 min \\ \hline
+Presentations (3 $\times$ 5 min + Q\&A) & 25 min \\ \hline
+Debrief: reference solution walk-through (one sub-dir only) & 15 min \\ \hline
+Buffer & 10 min \\ \hline
+\textbf{Total} & \textbf{170 min ($\approx$ 2.8 h)} \\ \hline
+\end{tabular}
+\end{center}
+
+\insttiming{If at minute 80 an engineer is still stuck on linker errors, give them the reference solution's \codepath{stubs.cpp} so they at least reach a passing test and can present. The seam-finding exercise is the learning; the linker error is not.}
+
+\section*{Pre-arm setup checklist}
+
+\begin{itemize}[label={[ ]}]
+  \item \texttt{cmake --version} returns $\geq$ 3.16 on engineer machines.
+  \item \codepath{modules/gtest/} submodule populated: \texttt{ls modules/gtest/googletest/src/gtest-all.cc} should succeed.
+  \item Confirm each \texttt{CMakeLists.txt} resolves the \texttt{ARDUPILOT\_ROOT} path. Run \texttt{cmake -B /tmp/check\_l5 -S course/labs/gnc-plane-3day-pilot-l5-capstone/eng1-l1} and look for errors before the lab.
+  \item Reference solutions available (separately, NOT in the course repo).
+  \item Projector shows \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1029}{1078} for Eng 3 at the start.
+\end{itemize}
+
+\section*{Per-engineer assignment briefs}
+
+\subsection*{Engineer 1 --- \texttt{AP\_L1\_Control}}
+
+\textbf{Extract these files} (from the ArduPilot source tree):
+\begin{itemize}
+  \item \citefile{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}
+  \item \citefile{libraries/AP\_L1\_Control/AP\_L1\_Control.h}
+\end{itemize}
+
+\textbf{Stubs to write}: \texttt{IAhrs} interface (4 methods L1 calls: \texttt{get\_location}, \texttt{groundspeed\_vector}, \texttt{get\_yaw}, \texttt{get\_yaw\_sensor}), \texttt{Location} type, \texttt{AP\_Math} helpers (\texttt{wrap\_PI}, \texttt{constrain\_float}, \texttt{safe\_sqrt}, \texttt{is\_zero}, \texttt{is\_positive}).
+
+\textbf{Test scenario}: \texttt{prev=(0,0)}, \texttt{next=(1000m, 0)}, vehicle at \texttt{(500m, 100m)} heading 90$^\circ$. Expect positive \texttt{nav\_roll\_cd} (turn right toward line).
+
+\textbf{Why this is the smallest extraction}: L1 is silent in the hot path --- no \texttt{AP\_Logger}, no \texttt{GCS\_SEND\_TEXT}, no \texttt{AP\_Mission}, no \texttt{AP\_NavEKF3}. The full header is 138 lines.
+
+\subsection*{Engineer 2 --- \texttt{AP\_TECS}}
+
+\textbf{Extract these files}:
+\begin{itemize}
+  \item \citefile{libraries/AP\_TECS/AP\_TECS.cpp}
+  \item \citefile{libraries/AP\_TECS/AP\_TECS.h}
+\end{itemize}
+
+\textbf{Stubs to write}: \texttt{AP\_AHRS} (more methods than L1: pitch, yaw, NED velocity), \texttt{AP\_Logger::Write} (no-op), \texttt{AP\_FixedWing::FlightStage} (enum + minimal struct).
+
+\textbf{Test scenario}: one cycle of \texttt{update\_pitch\_throttle} with 100 m altitude error and 5 m/s airspeed error. Expect bounded throttle and pitch demands.
+
+\textbf{Entanglement note}: TECS uses \texttt{AP\_FixedWing::FlightStage} to gate landing-vs-cruise behaviour. \texttt{AP\_Logger::Write} calls scattered through the body for state inspection --- can be no-op stubs.
+
+\subsection*{Engineer 3 --- \texttt{AP\_NavEKF3} lane-health subset}
+
+\textbf{DO NOT copy the full NavEKF3.} Instead, extract only:
+\begin{itemize}
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1029}{1062} --- \texttt{checkLaneSwitch}.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1064}{1078} --- \texttt{switchLane}.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1092}{1099} --- \texttt{updateCoreErrorScores}.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3\_Outputs.cpp}{62}{86} --- \texttt{NavEKF3\_core::errorScore}.
+\end{itemize}
+
+\textbf{Pattern}: this is pattern (c) from M10 --- math/algorithm only + reimplement wiring. Re-express the arbitration logic against the \texttt{IEKFCoreObservable} interface from \codepath{mock\_NavEKF3\_core.h} instead of calling \texttt{core[i]} directly.
+
+\textbf{Test scenario}: 3 mock cores with error-scores \texttt{[0.2, 1.5, 0.3]}; verify \texttt{checkLaneSwitch} selects lane 2 (lowest, below 0.9 gate); verify the 5-second debounce is honoured.
+
+\section*{Common failures and what to say}
+
+\begin{center}\footnotesize
+\begin{tabular}{|p{4.5cm}|p{4.0cm}|p{6.0cm}|}\hline
+\textbf{Symptom / exit code} & \textbf{Diagnostic} & \textbf{What to say} \\ \hline
+\texttt{cmake configure failed} (exit code 1) & \texttt{cmake -B build -DARDUPILOT\_ROOT=\$(git rev-parse --show-toplevel)} from sub-dir & ``Check the \texttt{ARDUPILOT\_ROOT} path.'' \\ \hline
+\texttt{cmake build failed} (exit code 2) & First (not last) compile/linker error & ``First error first --- usually a missing \texttt{\#include}. Add the library directory to \texttt{include\_directories()}.'' \\ \hline
+\texttt{AP\_Param::setup\_object\_defaults} linker error & --- & ``Stub with one-line no-op: \texttt{void AP\_Param::setup\_object\_defaults(const void*, const AP\_Param::GroupInfo*) \{\}} in \codepath{stubs.cpp}. That's the seam --- you found it.'' \\ \hline
+\texttt{GCS\_SEND\_TEXT} linker error & --- & ``Mock HAL does not provide \texttt{GCS\_SEND\_TEXT}. Add a stub: \texttt{void gcs\_send\_text\_p(MAV\_SEVERITY, const char*, ...) \{\}} or replace the macro. This is why M10 said GCS coupling is a cost.'' \\ \hline
+Test compiles but fails assertion & --- & ``Add \texttt{std::printf} to print the actual value. Then check mock inputs.'' \\ \hline
+Eng 3 stuck on the \texttt{IEKFCoreObservable} interface & --- & ``Hint: \texttt{checkLaneSwitch} only calls \texttt{core[i].errorScore()}, \texttt{healthy()}, \texttt{have\_aligned\_yaw()}, \texttt{have\_aligned\_tilt()}. That IS the interface. Write those four methods in your \codepath{lane\_switch.h}.'' \\ \hline
+\end{tabular}
+\end{center}
+
+\section*{Verdict signatures}
+
+The headless harness checks (per the L5 test report at \codepath{course/labs/gnc-plane-3day-pilot-l5-capstone/runs/}):
+
+\begin{enumerate}
+  \item Each sub-dir's \texttt{cmake configure} succeeds.
+  \item Each sub-dir's \texttt{cmake build} succeeds.
+  \item The stub tests compile (and \emph{fail} --- failure is expected pre-extraction).
+\end{enumerate}
+
+\textbf{The reference solution is NOT run by lab-tester.} You verify it manually.
+
+\insttiming{L5 reached PASS in iter 3. Headless verdict signatures stable per the test report.}
+
+\section*{Reference solution availability}
+
+Reference solutions live in a separate git branch (\texttt{labs/l5-reference}) or an instructor-only archive. Each contains:
+\begin{itemize}
+  \item Extracted source files (already copied in).
+  \item \codepath{stubs.cpp} with all minimal stubs.
+  \item Guard macro defined in \texttt{CMakeLists.txt}.
+  \item One additional \texttt{EXPECT\_NEAR} call showing a stretch result.
+\end{itemize}
+
+\textbf{Do not check reference solutions into the main course repo} --- they would defeat the lab exercise.
+
+\section*{Pointers to advanced material}
+
+\instadvanced{When an engineer asks ``could I do this for the full EKF?'': yes, but the seam count grows. The full \texttt{NavEKF3\_core} depends on \texttt{AP\_Logger}, \texttt{AP\_DAL}, \texttt{AP\_AHRS}, the full state vector. The lane-switch slice is an intentional minimal cut. The downstream GNC course (\siblingplane) spends 4 hours extracting the full EKF into a testable harness --- that is the adoption-axis depth this pilot is preparing for.}
+
+\instadvanced{When an engineer asks ``what did we gain by using \texttt{IEKFCoreObservable} instead of directly stubbing \texttt{NavEKF3\_core}?'': testability at the algorithm level, not the EKF state machine. With the interface, you can inject any errorScore sequence; with a full mock of \texttt{NavEKF3\_core}, you would have to manage all the internal state \texttt{errorScore()} reads. The interface is the seam you want.}
+
+\else
+% =============================================================================
+% STUDENT EDITION
+% =============================================================================
+
+\section*{What you will do}
+
+Each of you has been assigned one ArduPilot subsystem to extract into a standalone C++ project. You will copy the target source files out of the ArduPilot library tree, fix their \texttt{\#include} paths to work without the full build system, provide mock substitutes for the HAL and AHRS boundaries, and make a pre-written gtest pass.
+
+At the end of the day each of you presents your working extracted test for $\sim$5 minutes. This lab is the concrete expression of everything Module M10 taught: you locate the seams, cross them, and verify that the subsystem works in isolation.
+
+\section*{Per-engineer capstone allocations (assigned)}
+
+\begin{itemize}
+  \item \textbf{Engineer 1} $\rightarrow$ \texttt{AP\_L1\_Control}\\ Working dir: \codepath{course/labs/gnc-plane-3day-pilot-l5-capstone/eng1-l1/}
+  \item \textbf{Engineer 2} $\rightarrow$ \texttt{AP\_TECS}\\ Working dir: \codepath{course/labs/gnc-plane-3day-pilot-l5-capstone/eng2-tecs/}
+  \item \textbf{Engineer 3} $\rightarrow$ \texttt{AP\_NavEKF3} lane-health subset\\ Working dir: \codepath{course/labs/gnc-plane-3day-pilot-l5-capstone/eng3-ekf-lane/}
+\end{itemize}
+
+If you want to swap allocations with another engineer, do so before M11 starts. Once you have run \texttt{cmake -B build} in your sub-dir, you are committed.
+
+\section*{Before you start}
+
+\begin{itemize}
+  \item All previous labs complete.
+  \item \texttt{cmake} (3.16+) and \texttt{make}/\texttt{ninja} installed. Check: \texttt{cmake --version}.
+  \item ArduPilot repo on branch \texttt{GNC-0.1} (the lab CMakeLists.txt references the vendored gtest at \codepath{modules/gtest/}).
+\end{itemize}
+
+\section*{The steps}
+
+\subsection*{Step 1 --- Confirm the scaffolding compiles (pre-extraction)}
+From your sub-directory:
+\begin{Verbatim}[frame=single,fontsize=\small]
+cmake -B build && cmake --build build
+\end{Verbatim}
+Build should succeed. Then:
+\begin{Verbatim}[frame=single,fontsize=\small]
+ctest --test-dir build
+\end{Verbatim}
+Should show \textbf{one FAILED test}. This is correct --- the test is designed to fail until you copy in the subsystem source.
+
+If the build fails, check the \texttt{ARDUPILOT\_ROOT} path in cmake output --- it should point to the repository root.
+
+\subsection*{Step 2 --- Identify the target source files}
+
+\textbf{Engineer 1 (\texttt{AP\_L1\_Control}):}
+\begin{itemize}
+  \item \citefile{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp} $\rightarrow$ \codepath{eng1-l1/AP\_L1\_Control/AP\_L1\_Control.cpp}
+  \item \citefile{libraries/AP\_L1\_Control/AP\_L1\_Control.h} $\rightarrow$ \codepath{eng1-l1/AP\_L1\_Control/AP\_L1\_Control.h}
+\end{itemize}
+(The other files in the library are not needed for \texttt{update\_waypoint}.)
+
+\textbf{Engineer 2 (\texttt{AP\_TECS}):}
+\begin{itemize}
+  \item \citefile{libraries/AP\_TECS/AP\_TECS.cpp} $\rightarrow$ \codepath{eng2-tecs/AP\_TECS/AP\_TECS.cpp}
+  \item \citefile{libraries/AP\_TECS/AP\_TECS.h} $\rightarrow$ \codepath{eng2-tecs/AP\_TECS/AP\_TECS.h}
+\end{itemize}
+
+\textbf{Engineer 3 (EKF3 lane switch slice):}
+You do NOT copy the full NavEKF3. Instead:
+\begin{itemize}
+  \item Read \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1029}{1078} (\texttt{checkLaneSwitch} and \texttt{switchLane}).
+  \item Create \codepath{lane\_switch.cpp} that reimplements this logic using the \texttt{IEKFCoreObservable} interface from \codepath{mock\_NavEKF3\_core.h} instead of calling \texttt{core[i]} directly.
+  \item Create \codepath{lane\_switch.h} declaring the \texttt{LaneSwitchLogic} class the test expects.
+\end{itemize}
+
+\subsection*{Step 3 --- Update CMakeLists.txt}
+Uncomment the line in \texttt{EXTRACTED\_SOURCES} corresponding to your copied file. E.g. for Engineer 1:
+\begin{Verbatim}[frame=single,fontsize=\small]
+set(EXTRACTED_SOURCES
+    AP_L1_Control/AP_L1_Control.cpp
+)
+\end{Verbatim}
+
+\subsection*{Step 4 --- Fix \#include paths}
+You will see errors like:
+\begin{Verbatim}[frame=single,fontsize=\small]
+AP_L1_Control.cpp:5:10: fatal error: 'AP_Navigation/AP_Navigation.h' file not found
+\end{Verbatim}
+Fix by:
+\begin{itemize}
+  \item Adding library directories to \texttt{include\_directories()} in \texttt{CMakeLists.txt}, OR
+  \item Prefixing the include with \texttt{\$\{ARDUPILOT\_ROOT\}/libraries/} in the copied source.
+\end{itemize}
+
+\subsection*{Step 5 --- Stub out unresolved symbols}
+Common examples:
+\begin{itemize}
+  \item \texttt{AP\_Logger::Write} --- no-op stub in a new file (e.g. \codepath{stubs.cpp}).
+  \item \texttt{GCS\_SEND\_TEXT} --- already no-op'd if you link against the mock HAL.
+\end{itemize}
+For each linker error, add the minimal stub. Do not copy entire files to fix one symbol.
+
+\subsection*{Step 6 --- Enable the real test and define the guard macro}
+The real test is gated behind a \texttt{\#ifdef}:
+\begin{itemize}
+  \item Engineer 1: \texttt{AP\_L1\_CONTROL\_EXTRACTED}
+  \item Engineer 2: \texttt{AP\_TECS\_EXTRACTED}
+  \item Engineer 3: \texttt{EKF3\_LANE\_SWITCH\_EXTRACTED}
+\end{itemize}
+Add to your \texttt{CMakeLists.txt}:
+\begin{Verbatim}[frame=single,fontsize=\small]
+target_compile_definitions(l1_test PRIVATE AP_L1_CONTROL_EXTRACTED)
+\end{Verbatim}
+(Replace executable name and macro with yours.)
+
+\subsection*{Step 7 --- Build and run}
+\begin{Verbatim}[frame=single,fontsize=\small]
+cmake -B build && cmake --build build && ctest --test-dir build
+\end{Verbatim}
+Expected output:
+\begin{Verbatim}[frame=single,fontsize=\small]
+[ PASSED ] L1Control.UpdateWaypointTurnsRight                (Eng 1)
+[ PASSED ] TECS.OneCycleProducesBoundedDemands               (Eng 2)
+[ PASSED ] EKF3LaneSwitch.SelectsLowestErrorBelowGate        (Eng 3)
+[ PASSED ] EKF3LaneSwitch.HonorsFiveSecondDebounce           (Eng 3)
+\end{Verbatim}
+If the test fails (not just the build), read the assertion message --- it will tell you which expected value was wrong.
+
+\subsection*{Step 8 --- Prepare a 5-minute presentation}
+You should be able to answer:
+\begin{itemize}
+  \item What files did you copy?
+  \item What was the hardest seam to cross? (HAL boundary? AHRS interface? Logger?)
+  \item What stub did you write that surprised you?
+  \item Could this extracted subsystem run in your proprietary codebase with the mocks you wrote?
+\end{itemize}
+
+\section*{What success looks like}
+\begin{Verbatim}[frame=single,fontsize=\small]
+100% tests passed, 0 tests failed
+\end{Verbatim}
+printed by \texttt{ctest}.
+
+\section*{Common mistakes and quick fixes}
+
+\begin{enumerate}
+  \item \textbf{CMake cannot find gtest} --- \texttt{ARDUPILOT\_ROOT} variable points to the wrong directory. Use \texttt{cmake -B build -DARDUPILOT\_ROOT=/full/path/to/repo}.
+  \item \textbf{Linker errors for \texttt{AP\_HAL::millis()}} --- \codepath{mock\_hal.cpp} not in \texttt{EXTRACTED\_SOURCES} or not being compiled. Check \texttt{CMakeLists.txt}.
+  \item \textbf{Linker errors for \texttt{AP\_Param::setup\_object\_defaults}} --- you may need to compile \codepath{AP\_Param.cpp} too, or stub the calls. Cleanest fix: stub the one symbol that fails.
+  \item \textbf{Test compiles but assertion fails} --- the test is calling the real extracted code but the result is unexpected. Add \texttt{std::printf("val=\%f\textbackslash n", val);} to debug actual output, then check mock inputs.
+  \item \textbf{\texttt{ctest} says 0 tests found} --- you forgot \texttt{add\_test()} in \texttt{CMakeLists.txt}, or the binary name in \texttt{add\_test(COMMAND ...)} is wrong.
+\end{enumerate}
+
+\section*{Where to go next}
+
+This is the final lab. After your presentation, the instructor will walk through one reference solution together with the group, focusing on the seams that were hardest to cross. The remaining Day 3 time is your open Q\&A window.
+
+The artifact you keep: your sub-dir's full source tree with the extracted subsystem, your stubs, your passing gtest --- a working template for adopting more ArduPilot subsystems back at your team's stack.
+
+\fi
+
+\end{document}

@@ -1,0 +1,4 @@
+# Lab L1 params — stock plane parameters, no SITL stress
+# No non-default parameters are required for this lab.
+# The default Models/plane.parm loaded by sim_vehicle.py -f plane is sufficient.
+# The only prerequisite is a debug build so gdb can resolve symbols.

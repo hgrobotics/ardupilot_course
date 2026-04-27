@@ -1,0 +1,408 @@
+% slides/day3.tex
+% Day 3 --- Mission/Debug, Adoption Module, Capstone, Feedback (7 h: 6.5 h modules + 0.5 h buffer/feedback)
+% Single source for student + instructor builds (gated by version-flags.tex).
+\documentclass[aspectratio=169,11pt]{beamer}
+
+\input{../shared/version-flags.tex}
+\input{../shared/preamble.tex}
+\input{../shared/macros.tex}
+
+\title{GNC Plane 3-Day Pilot --- Internals + Adoption Axis\\\large Day 3 --- Mission/Debug, Adoption Module, Capstone}
+\subtitle{Senior GNC Engineer Cohort (n=3)}
+\date{7 h --- 6.5 h modules + 0.5 h feedback}
+\author{}
+\institute{\copyrightline}
+
+\begin{document}
+
+%==============================================================================
+\begin{frame}
+  \titlepage
+  \ifinstructor
+    \footnotesize Instructor build. Speaker notes, FAQs, pacing, adoption framing, capstone allocations, and advanced-course pointers are visible.
+  \fi
+\end{frame}
+
+\begin{frame}[allowframebreaks]{What today gets you}
+  By end of Day 3, every engineer has:
+  \begin{itemize}
+    \item Walked ArduPilot's mission/navigation/debugging surface at applied depth (M9 --- combined + compressed).
+    \item Internalised the four canonical extraction-seam patterns (M10 --- the new dedicated module).
+    \item Extracted one ArduPilot subsystem into a foreign-codebase stub against a mock HAL, with a passing gtest (M11 capstone --- the artifact you take home).
+    \item Presented the entanglement they hit and the design choice they made for it (5-min per engineer).
+  \end{itemize}
+  \insttiming{Frame for the day. 1 min. M11 capstone is 38\% of module budget --- comfortably above the 25\% rubric floor.}
+\end{frame}
+
+\begin{frame}{Day 3 schedule}
+  \begin{center}\small
+  \begin{tabular}{|l|l|c|l|}\hline
+  Module & Title & Hours & Depth \\ \hline
+  M9 & Mission, Navigation, Debugging (combined + compressed) & 2.0 & applied \\ \hline
+  M10 & Adopting ArduPilot subsystems into a proprietary codebase \emph{(NEW)} & 2.0 & internals \\ \hline
+  M11 & Capstone --- extract one subsystem (solo lab) \emph{(NEW)} & 2.5 & internals \\ \hline
+  M11.5 & Feedback session (held during buffer) & 0.5 & --- \\ \hline
+  \multicolumn{2}{|r|}{\textbf{Total}} & \textbf{7.0} & \\ \hline
+  \end{tabular}
+  \end{center}
+  \vfill
+  Capstone allocations are pre-assigned (swappable before M11 starts):
+  \begin{itemize}
+    \item Engineer 1 $\rightarrow$ \texttt{AP\_L1\_Control}
+    \item Engineer 2 $\rightarrow$ \texttt{AP\_TECS}
+    \item Engineer 3 $\rightarrow$ \texttt{AP\_NavEKF3} lane-health subset
+  \end{itemize}
+\end{frame}
+
+%==============================================================================
+\section{Module M9 --- Mission, Navigation, Debugging (2.0 h, applied)}
+
+\begin{frame}{Module M9 --- Mission, Navigation, Debugging (combined + compressed)}
+  \textbf{2.0 h, lecture+code-walk, \emph{applied} depth.}\\[1ex]
+  Why applied (not internals): you already debug flight code on your proprietary stack. You need ArduPilot's \emph{specific} debug tools at applied depth, not a third-pass theory tour.
+  \vfill
+  Learning objectives:
+  \begin{enumerate}
+    \item Read \texttt{AP\_Mission} briefly: storage layout, \texttt{update()} loop, \texttt{MAV\_CMD\_NAV\_*} dispatch.
+    \item Read where Auto hands off to L1: \texttt{Plane::navigate} $\rightarrow$ \texttt{nav\_controller->update\_waypoint}.
+    \item Recognise the gdb + SITL workflow: \texttt{sim\_vehicle.py --gdb}.
+    \item Recognise the autotest framework: \texttt{Tools/autotest/arduplane.py}, the per-test method pattern.
+    \item Recognise the gtest harness (Eng 3's capstone uses it directly).
+    \item Dataflash log layout: \texttt{LogStructure} registration, \texttt{Write} API.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{Mission storage and dispatch}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_Mission/AP\_Mission.h}{1}{100} --- public surface: start, stop, advance, retrieve current/next command.
+    \item \citerange{ArduPlane/mode\_auto.cpp}{1}{80} --- Auto mode \texttt{update()} dispatches on current command's \texttt{MAV\_CMD\_NAV\_*} ID.
+  \end{itemize}
+  \vfill
+  Mission items stored in EEPROM/SD as a packed array of \texttt{Mission\_Command} structs, indexed by sequence number.
+  \vfill
+  Dispatch IDs that matter for plane: \texttt{WAYPOINT}, \texttt{LOITER\_UNLIM}, \texttt{LOITER\_TURNS}, \texttt{RTL}, \texttt{LAND}.
+  \vfill
+  Handler sets up the navigation target; the actual cross-track control is L1.
+\end{frame}
+
+\begin{frame}{Auto $\rightarrow$ L1 hand-off}
+  \begin{itemize}
+    \item \citerange{ArduPlane/Plane.h}{1104}{1115} --- the \texttt{// navigation.cpp} declaration block. \texttt{Plane::navigate} is at line 1107.
+    \item \citeline{ArduPlane/Plane.h}{269} --- \texttt{nav\_controller = \&L1\_controller;} (set at construction).
+  \end{itemize}
+  \vfill
+  Auto mode calls \texttt{Plane::navigate} each tick to update L1. Inside, \texttt{nav\_controller->update\_waypoint(prev\_WP, next\_WP)}.
+  \vfill
+  This is the seam Engineer 1's capstone is on the other side of. The L1 controller does not know about Auto mode --- it just receives waypoints.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{gdb + SITL workflow}
+  \begin{itemize}
+    \item[\$] \texttt{sim\_vehicle.py -v ArduPlane --gdb}
+  \end{itemize}
+  Launches the binary under gdb in a console window. Breakpoints persist across vehicle resets.
+  \vfill
+  Argument parsing for \texttt{--gdb} is in the sim option group at \citerange{Tools/autotest/sim\_vehicle.py}{1073}{1240} (same block we walked in M2; \texttt{--gdb} is at line 1213).
+  \vfill
+  Code-along: every engineer launches \texttt{sim\_vehicle.py --gdb}, sets a breakpoint at \texttt{AP\_TECS::update\_pitch\_throttle}, hits it, prints the TECS state. $\sim$15 min.
+  \insttiming{This folds into M11 setup --- engineers will use the same workflow when debugging their capstone test failures.}
+\end{frame}
+
+\begin{frame}{Autotest framework --- recognition only}
+  \begin{itemize}
+    \item \citerange{Tools/autotest/arduplane.py}{36}{100} --- \texttt{class AutoTestPlane(vehicle\_test\_suite.TestSuite)} with \texttt{vehicleinfo\_key}, default mode, entry points.
+    \item \citerange{Tools/autotest/arduplane.py}{213}{260} --- \texttt{fly\_LOITER}: takes off, enters \flmode{LOITER}, validates a circle, disarms.
+  \end{itemize}
+  \vfill
+  Invocation: \texttt{Tools/autotest/autotest.py build.ArduPlane test.ArduPlane.<TestName>}.
+  \vfill
+  Recognition depth here. You have your own integration tests; you need to know that ArduPilot's tests are scripted Python flights against SITL, that they live in \codepath{Tools/autotest/}, and that they are how you would prove a fix to flight-relevant code.
+\end{frame}
+
+\begin{frame}{gtest harness --- the capstone's foundation}
+  Tests live under \codepath{libraries/<lib>/tests/test\_<name>.cpp} and include \texttt{<AP\_gtest.h>}.
+  \vfill
+  Build:
+  \begin{itemize}
+    \item[\$] \texttt{./waf --targets tests/test\_<name>}
+  \end{itemize}
+  \vfill
+  Produced binary at \codepath{build/sitl/tests/test\_<name>}. Runs standalone.
+  \vfill
+  \textbf{Engineer 3's capstone uses exactly this harness against a stub repo.}
+  \vfill
+  Engineers 1 and 2 use vendored gtest under their CMake build; same gtest API.
+\end{frame}
+
+\begin{frame}{Log layout --- recognition only}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_Logger/LogStructure.h}{1}{100} --- \texttt{LogStructure} typedef.
+  \end{itemize}
+  \vfill
+  Each message type has a fixed binary record format described by a \texttt{LogStructure} entry registered at logger init.
+  \vfill
+  Plane-specific messages: \param{ATT}, \param{CTUN}, \param{NTUN}, \param{TECS}, \param{ARSP}, \param{XKF1}--\param{XKF5}.
+  \vfill
+  MAVExplorer / \texttt{mavlogdump.py} decode records using the embedded format definitions. L4 produced \param{TECS} plots; L3 produced \param{XKF*} plots; L2 produced \param{PARAM\_VALUE}.
+\end{frame}
+
+\begin{frame}{Compare to your stack --- testing topology}
+  SITL + gdb + Python autotest is one of three families:
+  \begin{itemize}
+    \item Hardware-in-the-loop with a dedicated rig.
+    \item Pure software in a unit-test framework.
+    \item Scripted system-test against a sim (ArduPilot's autotest).
+  \end{itemize}
+  \vfill
+  ArduPilot's autotest is closer to a system test than a unit test --- each test takes seconds to minutes.
+  \vfill
+  Trade-off: very high fidelity vs slower than unit tests. The C++ gtest layer fills the unit-test gap.
+\end{frame}
+
+%==============================================================================
+\section{Module M10 --- Adopting ArduPilot subsystems into a proprietary codebase \emph{(NEW)} (2.0 h, internals)}
+
+\begin{frame}{Module M10 --- Adopting ArduPilot subsystems into a proprietary codebase}
+  \textbf{2.0 h, lecture+code-walk, \emph{internals} depth.}\\[1ex]
+  \textbf{The new module.} What you came for.
+  \vfill
+  We walk the four canonical extraction-seam patterns, then walk one worked example (\texttt{AP\_L1\_Control}) end-to-end, then compare with \texttt{AP\_TECS} (stretch case) and the \texttt{AP\_NavEKF3} lane-arbitration subset (Engineer 3's capstone target).
+  \vfill
+  Learning objectives:
+  \begin{enumerate}
+    \item Survey the four extraction-seam patterns.
+    \item Walk \texttt{AP\_L1\_Control} extraction end-to-end.
+    \item Compare with \texttt{AP\_TECS} (stretch) and \texttt{AP\_NavEKF3} lane-switch subset.
+    \item Recognise the GPLv3 obligation explicitly. Your organisation owns the legal call.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{The four canonical extraction-seam patterns}
+  \begin{enumerate}
+    \item \textbf{(a) Library + stub HAL.} Vendor source files; provide thin mock HAL implementing only what the library actually calls (\texttt{AP\_HAL::micros()}, sometimes \texttt{Scheduler::delay()}). Used for \texttt{AP\_L1\_Control}, \texttt{AP\_TECS}, most controllers.
+    \item \textbf{(b) Library + replace \texttt{AP\_Param}.} Vendor source; either keep \texttt{AP\_Param} and stub \texttt{Storage}, or replace \texttt{var\_info[]} access with your own config system's accessors. Used when your config is incompatible (e.g. JSON-backed).
+    \item \textbf{(c) Math/algorithm only + reimplement wiring.} Read the algorithm, reimplement in your codebase using your idioms. Used for Engineer 3's capstone.
+    \item \textbf{(d) Black-box ArduPilot via MAVLink/DDS.} Run unmodified ArduPilot in a companion process. Not extraction in the strict sense.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{Worked example --- \texttt{AP\_L1\_Control} (smallest self-contained library)}
+  \textbf{Public surface}:
+  \begin{itemize}
+    \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.h}{1}{138} --- the full header (138 lines, fits a read-aloud).
+  \end{itemize}
+  \vfill
+  Constructor: \texttt{(AP\_AHRS \&ahrs, const AP\_FixedWing \&parms)}.
+  \vfill
+  Methods exposed:
+  \begin{itemize}
+    \item \texttt{update\_waypoint(prev, next, dist\_min)}
+    \item \texttt{update\_loiter(center, radius, direction)}
+    \item \texttt{update\_heading\_hold(navigation\_heading\_cd)}
+    \item Accessors: \texttt{nav\_roll\_cd()}, \texttt{lateral\_acceleration()}, \texttt{nav\_bearing\_cd()}, \texttt{bearing\_error\_cd()}, \texttt{crosstrack\_error()}.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{\texttt{AP\_L1\_Control} --- entanglement set}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{1}{15} --- file header / dependencies.
+    \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{7}{44} --- \texttt{var\_info[]} table.
+  \end{itemize}
+  \vfill
+  Function bodies use:
+  \begin{itemize}
+    \item \texttt{AP\_HAL::micros()} for \texttt{\_last\_update\_waypoint\_us} differencing.
+    \item \texttt{AP\_Param} for the four \param{NAVL1\_*} parameters.
+    \item \texttt{AP\_AHRS::get\_location}, \texttt{groundspeed\_vector}, \texttt{get\_yaw}, \texttt{get\_yaw\_sensor} (4 methods).
+    \item \texttt{Location} from \texttt{AP\_Common/Location.h}.
+    \item \texttt{AP\_Math} helpers: \texttt{wrap\_PI}, \texttt{constrain\_float}, \texttt{safe\_sqrt}, \texttt{is\_zero}, \texttt{is\_positive}.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{\texttt{AP\_L1\_Control} --- what does NOT need to come}
+  \begin{itemize}
+    \item \textbf{No \texttt{AP\_Logger}} in \texttt{update\_waypoint} --- the controller is silent in the hot path.
+    \item \textbf{No \texttt{GCS\_SEND\_TEXT}} --- error reporting goes through return values.
+    \item \textbf{No \texttt{AP\_Mission}} --- the caller passes waypoints in.
+    \item \textbf{No \texttt{AP\_NavEKF3}} --- \texttt{AP\_AHRS} hides which estimator is running. The caller's AHRS may be a thin shim around your own EKF.
+  \end{itemize}
+  \vfill
+  This silence in the hot path is what makes L1 the cleanest extraction in the codebase.
+\end{frame}
+
+\begin{frame}{\texttt{AP\_L1\_Control} --- extraction recipe (Eng 1's capstone)}
+  \begin{enumerate}
+    \item Stub \texttt{AP\_HAL::HAL} in \codepath{mock\_hal.cpp} with just \texttt{AP\_HAL::micros()} against your platform's clock. No-op \texttt{Scheduler::delay()} if needed.
+    \item Replace \texttt{AP\_AHRS \&ahrs} with thin \texttt{IAhrs} interface exposing the four methods L1 calls. Implement against your stack's AHRS.
+    \item Vendor \texttt{AP\_Math} \texttt{wrap\_PI} / \texttt{constrain\_float} / \texttt{safe\_sqrt} (small functions; copy or inline).
+    \item Vendor \texttt{AP\_Common/Location.h} (or replace with your geo type and adjust \texttt{update\_waypoint} signature).
+    \item Compile against your build system (CMake or whatever). Test against gtest.
+  \end{enumerate}
+  \vfill
+  This is exactly Engineer 1's capstone in M11.
+\end{frame}
+
+\begin{frame}{Stretch case --- \texttt{AP\_TECS} (Eng 2's capstone)}
+  Same shape as L1, but the file header at \citerange{libraries/AP\_TECS/AP\_TECS.cpp}{1}{30} shows additional includes: \texttt{AP\_Landing.h}, \texttt{AP\_FixedWing.h}.
+  \vfill
+  Inside the class, \texttt{update\_pitch\_throttle} uses \texttt{AP\_FixedWing::FlightStage} to gate landing-vs-cruise behaviour.
+  \vfill
+  \texttt{AP\_Logger::Write} calls scattered through the body for state inspection --- you can keep them as no-op stubs (recommended for debugging) or remove them.
+  \vfill
+  Engineer 2's capstone walks this. One tier of entanglement above L1; same recipe shape.
+\end{frame}
+
+\begin{frame}{Hardest case --- \texttt{AP\_NavEKF3} lane-switch subset (Eng 3's capstone)}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1029}{1078} --- \texttt{checkLaneSwitch} + \texttt{switchLane}.
+    \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3\_Outputs.cpp}{62}{86} --- \texttt{errorScore}.
+  \end{itemize}
+  \vfill
+  Trick: \texttt{errorScore} reads internal core state (innovation test ratios from many fusion paths).
+  \vfill
+  \textbf{For the extraction, accept that \emph{your} EKF instances each compute their own \texttt{errorScore}} (or whatever metric you choose --- it does not have to be the max-of-test-ratios formula).
+  \vfill
+  Lift only the \textbf{arbitration logic} from \texttt{checkLaneSwitch} and \texttt{switchLane}. That is $\leq$ 50 lines of real algorithm wrapped in ArduPilot scaffolding. Pattern (c) from the four-pattern slide.
+\end{frame}
+
+\begin{frame}{The seam itself --- HAL boundary, revisited}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_HAL/HAL.h}{21}{90} --- the class.
+    \item \citerange{libraries/AP\_HAL/system.h}{14}{21} --- the four free functions.
+    \item \citerange{libraries/AP\_Math/AP\_Math.h}{1}{100} --- math helpers.
+  \end{itemize}
+  \vfill
+  For an algorithm-only extraction, the minimum-viable HAL is two free functions (\texttt{micros}, \texttt{millis}) plus a degenerate \texttt{Scheduler} (delay only). Everything else can be stubbed.
+  \vfill
+  L5 capstone scaffolding has these stubs pre-written. Engineers fill in the algorithm side.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{The hard truth --- GPLv3}
+  Extracting from a GPLv3 codebase carries license obligations.
+  \vfill
+  \textbf{The legal posture is your organisation's call, not the course's.}
+  \vfill
+  State this explicitly and move on. We are not your lawyers; the capstone exists because the technical extraction is interesting, not because we have ruled on the license.
+  \instnote{This is the second time we mention GPLv3 (first time was M1). Do not relitigate.}
+\end{frame}
+
+\begin{frame}{Compare to your stack --- build vs buy}
+  Every adoption decision is a build vs buy decision.
+  \vfill
+  ArduPilot is in a third category --- open-source, GPLv3, well-tested.
+  \vfill
+  \begin{itemize}
+    \item \emph{Cost of buy}: GPLv3 obligation.
+    \item \emph{Cost of build}: multi-quarter integration work plus loss of the ArduPilot community's flight-test coverage.
+  \end{itemize}
+  \vfill
+  Pattern (a) is build-for-the-wiring, buy-for-the-algorithm. Usually the right answer for the controllers in M8.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{No formal lab in M10}
+  M10 is the briefing module. M11 is the lab.
+  \vfill
+  Buffer the remaining minutes for capstone-allocation Q\&A:
+  \begin{itemize}
+    \item Can engineers swap allocations? Yes, before M11 starts.
+    \item Can two engineers work on the same capstone? Yes, but then no swap.
+    \item Can we add a fourth capstone for a stretch path? Defer to feedback session (M11.5).
+  \end{itemize}
+  \insttiming{If you finish M10 early, start M11 setup early --- the cmake configure step has bitten students before.}
+\end{frame}
+
+%==============================================================================
+\section{Module M11 --- Capstone (2.5 h, solo lab)}
+
+\begin{frame}{Module M11 --- Capstone: extract one subsystem into a foreign-codebase stub}
+  \textbf{2.5 h, solo lab, \emph{internals} depth.}\\[1ex]
+  \textbf{The artifact each engineer keeps.}
+  \vfill
+  Each engineer extracts their pre-allocated subsystem into a stub repo, makes a failing gtest pass, and presents the entanglement they hit at the end.
+  \vfill
+  Setup (provided by lab-builder under \codepath{course/labs/gnc-plane-3day-pilot-l5-capstone/}):
+  \begin{itemize}
+    \item Three pre-staged stub repos: \codepath{eng1-l1/}, \codepath{eng2-tecs/}, \codepath{eng3-ekf-lane/}.
+    \item Each with: minimal \codepath{mock\_hal.cpp}, \codepath{mock\_ahrs.h}, \codepath{mock\_storage.cpp}, vendored \texttt{AP\_Math} headers, \texttt{CMakeLists.txt}, vendored gtest, one initially-failing test stub.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Per-engineer assignments}
+  \textbf{Engineer 1 --- \texttt{AP\_L1\_Control}}\\
+  Vendor \texttt{AP\_L1\_Control.h}/\texttt{.cpp} + \texttt{AP\_Math} helpers; stub \texttt{AP\_AHRS} and \texttt{Location}; compile; pass gtest exercising \texttt{update\_waypoint} on hardcoded scenario where \texttt{prev=(0,0)}, \texttt{next=(1000m, 0)}, vehicle at \texttt{(500m, 100m)} heading 90$^\circ$. Expect positive \texttt{nav\_roll\_cd} (turn right toward line).
+  \vfill
+  \textbf{Engineer 2 --- \texttt{AP\_TECS}}\\
+  Vendor \texttt{AP\_TECS.h}/\texttt{.cpp}; stub \texttt{AP\_AHRS}, \texttt{AP\_Logger}, \texttt{AP\_FixedWing::FlightStage}; compile; pass gtest exercising one cycle of \texttt{update\_pitch\_throttle} with 100 m altitude error and 5 m/s airspeed error. Expect bounded throttle and pitch demands.
+  \vfill
+  \textbf{Engineer 3 --- \texttt{AP\_NavEKF3} lane-health subset}\\
+  Vendor only \texttt{checkLaneSwitch}, \texttt{switchLane}, \texttt{updateCoreErrorScores}, \texttt{updateCoreRelativeErrors}, \texttt{errorScore}. Stub surrounding \texttt{NavEKF3\_core} with configurable \texttt{errorScore} value. Compile; pass gtest with 3 mock cores at \texttt{[0.2, 1.5, 0.3]}: verify lane 2 selected (lowest, below 0.9 gate) and 5-second debounce honoured.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{M11 --- pacing and 1:1 instructor support}
+  Total budget: 150 min (2.5 h).
+  \vfill
+  \begin{center}\small
+  \begin{tabular}{|l|c|}\hline
+  Phase & Time \\ \hline
+  M11 setup recap (the 4 seams) & 15 min \\ \hline
+  Scaffold build verification (3 engineers) & 10 min \\ \hline
+  Extraction work (independent, 1:1 instructor available) & 80 min \\ \hline
+  Early finishers: stretch (run extracted subsystem in a loop) & 15 min \\ \hline
+  Presentations (3 $\times$ 5 min + Q\&A) & 25 min \\ \hline
+  Debrief: reference solution walk-through (one sub-dir) & 15 min \\ \hline
+  \end{tabular}
+  \end{center}
+  \vfill
+  Pass criterion: \texttt{ctest --test-dir build} prints \texttt{100\% tests passed}.
+  \insttiming{If at minute 80 an engineer is still stuck on linker errors, give them the reference solution's \texttt{stubs.cpp} so they at least reach a passing test and can present. The seam-finding exercise is the learning; the linker error is not.}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{M11 --- presentation prompts}
+  Each engineer should be able to answer in their 5-min slot:
+  \begin{itemize}
+    \item What files did you copy?
+    \item What was the hardest seam to cross? (HAL boundary? AHRS interface? Logger?)
+    \item What stub did you write that surprised you?
+    \item Could this extracted subsystem run in your proprietary codebase with the mocks you wrote?
+  \end{itemize}
+  \vfill
+  Lab guide: see the printed L5 student/instructor PDFs.
+  \instnote{L5 reached PASS in iter 3. The headless harness verifies cmake configure + cmake build succeeds and stub tests compile (and fail --- failure is expected pre-extraction). Reference solutions are NOT in the course repo --- they would defeat the exercise. Verify reference solutions manually.}
+\end{frame}
+
+%==============================================================================
+\section{Module M11.5 --- Feedback session}
+
+\begin{frame}[allowframebreaks]{Module M11.5 --- Feedback session (0.5 h)}
+  Pilot-cohort feedback during the Day 3 buffer slot.
+  \vfill
+  Topics:
+  \begin{itemize}
+    \item Per-module: was the depth right? Was the time budget right?
+    \item Per-lab: did the lab teach what the M-of-day intended? Where did setup break?
+    \item Adoption axis: did the M4--M8 side-bars accumulate into a useful framework? Did M10 land? Did the capstone produce an artifact each engineer expects to use?
+    \item What would make the pilot run as a 2-day course? As a 4-day course?
+  \end{itemize}
+  \vfill
+  Output captured for course-orchestrator's review and material-builder's iteration.
+  \insttiming{Hold the discussion --- do not lecture. Note responses verbatim where possible.}
+\end{frame}
+
+\begin{frame}{End of pilot --- what each engineer leaves with}
+  \begin{itemize}
+    \item A working debug SITL build of ArduPlane.
+    \item A read-level understanding of \texttt{AP\_Param}, EKF lane arbitration, TECS energy split, L1 lateral control, airspeed-scaled PID, the cork/push servo pattern.
+    \item Six accumulated adoption side-bars naming what each major subsystem drags in if you extract it.
+    \item One end-to-end extracted ArduPilot subsystem compiling against a mock HAL, with a passing gtest --- the artifact you take back to your team.
+  \end{itemize}
+  \vfill
+  Sibling courses for follow-up:
+  \begin{itemize}
+    \item \siblingplane\ --- 5-day version with QuadPlane omitted.
+    \item \siblingquadplane\ --- QuadPlane / VTOL transition state machines.
+  \end{itemize}
+  \vfill
+  \begin{center}\large Thanks for the pilot. See you on the next iteration.\end{center}
+\end{frame}
+
+\end{document}

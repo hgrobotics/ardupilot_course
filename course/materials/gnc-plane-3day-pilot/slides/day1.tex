@@ -1,0 +1,519 @@
+% slides/day1.tex
+% Day 1 --- Foundations + Build + HAL with adoption framing (7 h: 6.5 h modules + 0.5 h buffer)
+% Single source for student + instructor builds (gated by version-flags.tex).
+% Audience: 3 senior GNC engineers, internals depth.
+\documentclass[aspectratio=169,11pt]{beamer}
+
+\input{../shared/version-flags.tex}
+\input{../shared/preamble.tex}
+\input{../shared/macros.tex}
+
+\title{GNC Plane 3-Day Pilot --- Internals + Adoption Axis\\\large Day 1 --- Foundations, Build, HAL with Adoption Framing}
+\subtitle{Senior GNC Engineer Cohort (n=3)}
+\date{7 h --- 6.5 h modules + 0.5 h buffer}
+\author{}
+\institute{\copyrightline}
+
+\begin{document}
+
+%==============================================================================
+\begin{frame}
+  \titlepage
+  \ifinstructor
+    \footnotesize Instructor build. Speaker notes, FAQs, pacing, adoption framing, and advanced-course pointers are visible.
+  \fi
+\end{frame}
+
+\begin{frame}[allowframebreaks]{What today gets you}
+  By the end of Day 1, every engineer has:
+  \begin{itemize}
+    \item A debug SITL build of ArduPlane on their laptop.
+    \item Traced \texttt{Plane::ahrs\_update} down through HAL into the SITL backend.
+    \item A working mental model of HAL as the \emph{primary extraction seam} for any ArduPilot subsystem you might want to vendor into your proprietary stack.
+  \end{itemize}
+  \vfill
+  Audience frame: every ArduPilot decision is one design among many. We compare to your stack, not the other way around.
+  \insttiming{Frame the day. 1 min. Reassure: the adoption-axis side-bar is a recurring 2--4 min beat in M4--M8, not a one-shot.}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{Day 1 schedule}
+  \begin{center}\small
+  \begin{tabular}{|l|l|c|l|}\hline
+  Module & Title & Hours & Depth \\ \hline
+  M1 & ArduPilot Overview \& Ecosystem & 1.0 & survey \\ \hline
+  M2 & Operations Essentials, compressed & 1.5 & applied \\ \hline
+  M3 & Build System \& Dev Environment & 1.0 & applied \\ \hline
+  M4 & HAL Architecture (adoption-seam framing) & 3.0 & internals \\ \hline
+  & Buffer / Q\&A & 0.5 & --- \\ \hline
+  \multicolumn{2}{|r|}{\textbf{Total}} & \textbf{7.0} & \\ \hline
+  \end{tabular}
+  \end{center}
+  \vfill
+  Lab L1 (HAL + scheduler probe) sits inside M4 at $\sim$30 min.
+  \instnote{Day 1 hands-on share is $\sim$19--23\%, below the 25\% rubric floor. Knowing accept --- this audience prefers code-walks over rote busywork. See plan iter-2 Lessons Applied F5.}
+\end{frame}
+
+%==============================================================================
+\section{Module M1 --- Overview \& Ecosystem (1.0 h, survey)}
+
+\begin{frame}[allowframebreaks]{Module M1 --- ArduPilot Overview \& Ecosystem}
+  \textbf{1.0 h, lecture+demo, \emph{survey} depth.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Place ArduPilot in the open-source autopilot landscape; recognise the GPLv3 posture and resulting adoption constraints for proprietary use.
+    \item Recognise the 6-vehicle / shared-libraries / HAL architecture in the directory tree.
+    \item Locate ArduPlane's main vehicle class and scheduler table; confirm the \textbf{50 Hz default fast-loop} for plane vs Copter's 400 Hz default --- and \emph{why}.
+    \item Recognise that Lua and DDS/ROS2 exist as integration surfaces; they live in the 5-day source, not in this pilot.
+  \end{enumerate}
+  \insttiming{1.0 h survey. 8--10 slides max. Watch-only demo at the end ($\sim$5 min).}
+\end{frame}
+
+\begin{frame}{The architecture in one sentence}
+  ArduPilot is a multi-vehicle autopilot built as \textbf{vehicles + shared libraries + a HAL}.
+  \vfill
+  \begin{itemize}
+    \item Vehicles: \codepath{ArduPlane/}, \codepath{ArduCopter/}, \codepath{Rover/}, \codepath{ArduSub/}, \codepath{AntennaTracker/}, \codepath{Blimp/} --- each inherits from \texttt{AP\_Vehicle} and registers a scheduler table.
+    \item Shared libraries: $\sim$150. Naming prefixes are load-bearing: \texttt{AP\_*} general, \texttt{AC\_*} Copter-flavoured, \texttt{AR\_*} Rover-flavoured, \texttt{APM\_Control} plane-specific attitude PIDs.
+    \item HAL: \codepath{libraries/AP\_HAL/} defines the platform-independent interface; concrete impls live in \codepath{AP\_HAL\_ChibiOS}, \codepath{AP\_HAL\_Linux}, \codepath{AP\_HAL\_ESP32}, \codepath{AP\_HAL\_SITL}.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{Plane class anchor --- one cite}
+  \begin{itemize}
+    \item \citerange{ArduPlane/Plane.h}{1}{50} --- \texttt{class Plane : public AP\_Vehicle} declaration.
+  \end{itemize}
+  \vfill
+  Open it once. Notice the \texttt{public AP\_Vehicle} inheritance --- the same parent every other vehicle inherits from.
+  \instnote{Do not click into the file on the projector unless asked. Engineers should open in their own editors.}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{The Plane fast-loop is 50 Hz --- and \emph{why}}
+  \begin{itemize}
+    \item \citerange{ArduPlane/Plane.cpp}{62}{95} --- \texttt{scheduler\_tasks[]}: \texttt{FAST\_TASK(ahrs\_update)}, \texttt{FAST\_TASK(stabilize)}, \texttt{FAST\_TASK(set\_servos)}, then rate-limited \texttt{SCHED\_TASK(...)} entries.
+    \item \citerange{libraries/AP\_Scheduler/AP\_Scheduler.cpp}{43}{49} --- \texttt{SCHEDULER\_DEFAULT\_LOOP\_RATE} selects 400 under \texttt{APM\_BUILD\_COPTER\_OR\_HELI}, \textbf{50 otherwise}.
+    \item \citerange{libraries/AP\_Scheduler/AP\_Scheduler.cpp}{55}{69} --- \texttt{SCHED\_LOOP\_RATE} parameter, \texttt{@Range: 50 400}, \texttt{@RebootRequired: True}.
+  \end{itemize}
+  \vfill
+  Why 50 Hz: fixed-wing dynamics are an order of magnitude slower than a multirotor's. The Nyquist budget is comfortable at 50 Hz for attitude and far more comfortable for guidance.
+  \instfaq{Why is the rate static at compile time?}{Compile-time selection lets the linker drop the high-rate path entirely from the plane binary. Runtime override exists via SCHED\_LOOP\_RATE; reboot required.}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{Compare to your stack}
+  Most proprietary stacks have an equivalent of the scheduler table.
+  \vfill
+  The question worth thinking about:
+  \begin{quote}
+    Is yours statically declared at compile time (ArduPilot) or built up at runtime?
+  \end{quote}
+  \vfill
+  ArduPilot's static table is small, fast, and inspectable. It costs you the ability to add a task without recompiling.
+  \instadvanced{The 5-day source (\siblingplane) covers Lua scripting in M13 as the runtime task-injection escape hatch. Out of scope for this pilot.}
+\end{frame}
+
+\begin{frame}{Library naming carries meaning --- one printed handout}
+  \begin{itemize}
+    \item \citerange{course/custom\_gnc\_course\_plane.md}{1280}{1295} --- Copter$\leftrightarrow$Plane library mapping table from Appendix C of the 5-day source. Printed handout.
+  \end{itemize}
+  \vfill
+  Recognition only. We will return to specific libraries (\texttt{AP\_HAL}, \texttt{AP\_Param}, \texttt{AP\_NavEKF3}, \texttt{AP\_TECS}, \texttt{AP\_L1\_Control}, \texttt{APM\_Control}) at internals depth in M4--M8.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{GPLv3 and the adoption constraint --- state it once, move on}
+  \textbf{Hard truth.} ArduPilot is GPLv3.
+  \vfill
+  Vendoring a subsystem into a proprietary codebase carries license obligations. The legal posture is your organisation's call --- not the course's.
+  \vfill
+  We state this here, return to it explicitly in M10, and do not relitigate it elsewhere. The capstone you take home is technically working extracted code; the legal review is yours to run separately.
+  \instnote{Do not editorialise on the GPLv3 question. The audience has lawyers; we have not. State, move on.}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{M1 demo --- watch only}
+  Instructor types on the projector:
+  \begin{itemize}
+    \item[\$] \texttt{Tools/autotest/sim\_vehicle.py -v ArduPlane --console --map}
+  \end{itemize}
+  \vfill
+  Three windows. Engineers watch only --- $\sim$5 min. The first formal lab is L1 in M4.
+  \insttiming{If your build is stale, this is when you find out --- pre-warm the workspace before class.}
+\end{frame}
+
+%==============================================================================
+\section{Module M2 --- Operations Essentials, compressed (1.5 h, applied)}
+
+\begin{frame}[allowframebreaks]{Module M2 --- Operations Essentials, compressed}
+  \textbf{1.5 h, lecture+demo, \emph{applied} depth.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Launch ArduPlane SITL from a clean clone, attach MAVProxy, take off in \flmode{TAKEOFF}, switch to \flmode{FBWA}, fly a heading, switch to \flmode{RTL}.
+    \item Read MAVProxy's textual telemetry: altitude, airspeed, mode, heartbeat.
+    \item Recognise plane-specific dataflash messages: \param{ATT}, \param{CTUN}, \param{NTUN}, \param{ARSP}, \param{TECS}.
+  \end{enumerate}
+  \vfill
+  We are \emph{not} teaching mission planning, the GCS UI, or geofence/rally setup. You already operate a proprietary autopilot.
+  \insttiming{1.5 h applied. $\sim$10 min code-along at the end. M4 carries the first formal lab.}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{The launch sequence --- the canonical SITL launcher}
+  \begin{itemize}
+    \item[\$] \texttt{Tools/autotest/sim\_vehicle.py -v ArduPlane -f plane --console --map}
+  \end{itemize}
+  Two cite anchors into the launcher's argparse:
+  \begin{itemize}
+    \item \citeline{Tools/autotest/sim\_vehicle.py}{1} --- file header.
+    \item \citerange{Tools/autotest/sim\_vehicle.py}{1073}{1240} --- build + sim option groups: \texttt{--vehicle}, \texttt{--frame}, \texttt{--debug} (line 1106), \texttt{--gdb} (line 1213).
+    \item \citerange{Tools/autotest/sim\_vehicle.py}{1405}{1436} --- MAVProxy GUI option group: \texttt{--map} (line 1413), \texttt{--console} (line 1422).
+  \end{itemize}
+  \vfill
+  Argparse is split into named option groups --- a useful Python idiom in itself. We will use \texttt{--debug} in L1 (M4) and \texttt{--gdb} in M9.
+  \instnote{This cite was the iter-1 blocker location. The plan-iter-2 cite ranges (1073--1240, 1405--1436) honestly anchor the build/sim and MAVProxy GUI groups; do not revert to \texttt{:1500-1600}.}
+\end{frame}
+
+\begin{frame}{TAKEOFF is software, not a hardware mode}
+  \begin{itemize}
+    \item \citerange{ArduPlane/mode\_takeoff.cpp}{1}{80} --- \texttt{ModeTakeoff} is a \texttt{Mode} subclass with \texttt{update()}, \texttt{verify\_takeoff()}, configuration parameters.
+  \end{itemize}
+  \vfill
+  There is no special path through the firmware for takeoff. The mode runs the same control pipeline, parametrised differently.
+  \vfill
+  Internalise this: every ArduPilot flight mode is a class that overrides \texttt{update()} (and a few other hooks) on the \texttt{Mode} base. No compile-time mode dispatch.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{FBWA in 45 lines --- read aloud}
+  \begin{itemize}
+    \item \citerange{ArduPlane/mode\_fbwa.cpp}{1}{45} --- the entire \texttt{ModeFBWA} body. The file is exactly 45 lines.
+  \end{itemize}
+  \vfill
+  \texttt{ModeFBWA::update()} clamps stick inputs to attitude limits and writes desired roll and pitch into \texttt{nav\_roll\_cd} and \texttt{nav\_pitch\_cd}. That is the entire mode. The actual stabilisation runs in \texttt{Plane::stabilize} (called from the fast-loop scheduler table).
+  \vfill
+  Note the unit: \texttt{*\_cd} is \textbf{centi-degrees} --- the canonical integer angle unit in ArduPilot vehicle code, signed \texttt{int32\_t}.
+  \instfaq{Why centi-degrees?}{Historic --- predates pervasive \texttt{float} on flight hardware. The unit is now baked into MAVLink and into log structure layouts; renaming is forbidden by ABI compatibility.}
+\end{frame}
+
+\begin{frame}{Compare to your stack --- mode dispatch}
+  Most proprietary stacks dispatch flight-mode behaviour through a dedicated state machine.
+  \vfill
+  ArduPilot pushes the dispatch into virtual methods on the \texttt{Mode} base.
+  \vfill
+  Trade-off:
+  \begin{itemize}
+    \item \emph{Cost}: dynamic-dispatch (one vtable indirection) on every fast-loop tick.
+    \item \emph{Gain}: ``mode = polymorphic object'' is conceptually compact and adding a new mode is a new \texttt{.cpp} file.
+  \end{itemize}
+  \vfill
+  The cost is bounded; the readability gain is large.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{Plane-specific log messages --- recognition only}
+  \begin{itemize}
+    \item \param{ATT} --- attitude (\texttt{Roll}, \texttt{Pitch}, \texttt{Yaw}, \texttt{DesRoll}, \texttt{DesPitch}, \texttt{DesYaw})
+    \item \param{CTUN} --- control tuning (throttle output, target altitude vs barometric)
+    \item \param{NTUN} --- nav tuning (L1 lateral state)
+    \item \param{ARSP} --- airspeed (raw, calibrated, EAS$\leftrightarrow$TAS scale)
+    \item \param{TECS} --- energy controller state (\texttt{h}, \texttt{hdem}, \texttt{dh}, \texttt{dhdem}, \texttt{spdem}, \texttt{sp})
+    \item \param{XKF1}--\param{XKF5} --- EKF3 internals
+  \end{itemize}
+  \vfill
+  L4 leans on \param{ATT} and \param{TECS}; L3 leans on \param{XKF*}. The full reference list is at \citerange{course/custom\_gnc\_course\_plane.md}{130}{138} (printed handout).
+  \instnote{Do not unpack each message. Recognition only --- M9 covers log layout at applied depth.}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{M2 hands-on (10 min code-along)}
+  Every engineer on their own laptop:
+  \begin{enumerate}
+    \item \texttt{Tools/autotest/sim\_vehicle.py -v ArduPlane -f plane --console --map}
+    \item \texttt{mode TAKEOFF}, \texttt{arm throttle}, watch climb.
+    \item \texttt{mode FBWA}, fly heading.
+    \item \texttt{mode RTL}.
+  \end{enumerate}
+  \vfill
+  No formal artifact --- this is the warm-up.
+  \insttiming{$\sim$10 min. Strict cap. M3 follows.}
+\end{frame}
+
+%==============================================================================
+\section{Module M3 --- Build System \& Dev Environment (1.0 h, applied)}
+
+\begin{frame}{Module M3 --- Build System \& Dev Environment}
+  \textbf{1.0 h, lecture+lab, \emph{applied} depth.}\\[1ex]
+  Learning objectives:
+  \begin{enumerate}
+    \item Run \texttt{./waf configure --board sitl --debug \&\& ./waf plane}. Locate the artifact at \codepath{build/sitl/bin/arduplane}.
+    \item Recognise \codepath{wscript} files as Waf's per-directory build config.
+    \item Read \citerange{Tools/scripts/build\_options.py}{1}{50} and recognise the \texttt{AP\_<FEATURE>\_ENABLED} pattern --- critical for ``what comes with a subsystem at extraction time.''
+    \item Recognise the build targets that matter: \texttt{plane}, \texttt{bin/arduplane}, \texttt{tests/test\_<name>}.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{Waf in three lines}
+  \begin{itemize}
+    \item \texttt{./waf configure --board sitl --debug} --- writes \codepath{build/sitl/c4che/\_cache.py} with toolchain + feature flags.
+    \item \texttt{./waf plane} --- builds plane vehicle target into \codepath{build/sitl/bin/arduplane}.
+    \item \texttt{./waf --targets tests/test\_math} --- builds a single gtest binary into \codepath{build/sitl/tests/test\_math}.
+  \end{itemize}
+  \vfill
+  The \texttt{--debug} flag preserves debug symbols; without it, gdb is much less useful and L1 will be harder than necessary.
+  \vfill
+  \textbf{Never} run \texttt{waf} with \texttt{sudo} (file ownership in \codepath{build/} will then bite you on the next non-sudo build).
+\end{frame}
+
+\begin{frame}{wscript is small}
+  \begin{itemize}
+    \item \citerange{ArduPlane/wscript}{1}{40} --- vehicle \texttt{wscript}; declares vehicle-specific build options + the libraries this vehicle pulls in.
+  \end{itemize}
+  \vfill
+  Each library directory has its own \texttt{wscript} describing its sources. The top-level \texttt{wscript} orchestrates the lot.
+  \vfill
+  Conceptually identical to a CMake target list, just expressed in Python.
+\end{frame}
+
+\begin{frame}{\texttt{AP\_<FEATURE>\_ENABLED} --- what drags in what}
+  \begin{itemize}
+    \item \citerange{Tools/scripts/build\_options.py}{1}{50} --- file header + first few \texttt{Feature(...)} entries.
+  \end{itemize}
+  \vfill
+  When you read code and see \texttt{\#if AP\_TERRAIN\_AVAILABLE} or \texttt{\#if HAL\_QUADPLANE\_ENABLED}, that flag is in \codepath{build\_options.py}.
+  \vfill
+  \textbf{Hard rule the codebase observes:} a core, non-optional component must never depend on an optional one. The base build must succeed when optional features are disabled.
+  \vfill
+  This is the rule that makes extraction tractable. We return to it in M10.
+\end{frame}
+
+\begin{frame}{The file you will extract first --- preview}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{1}{15} --- three lines define the contract with the rest of the codebase.
+  \end{itemize}
+  \vfill
+  \begin{itemize}
+    \item \texttt{\#include <AP\_HAL/AP\_HAL.h>} --- the umbrella include.
+    \item \texttt{extern const AP\_HAL::HAL\& hal;} --- the singleton handle.
+    \item Opening of \texttt{var\_info[]} --- the parameter table.
+  \end{itemize}
+  \vfill
+  Engineer 1's capstone (M11) starts from exactly this file. M10 walks the extraction recipe end-to-end.
+\end{frame}
+
+\begin{frame}{Reference docs --- consult, don't narrate}
+  \begin{itemize}
+    \item \citefile{BUILD.md} --- long-form build reference. Consult it directly for unfamiliar errors. We do not narrate it here.
+  \end{itemize}
+  \vfill
+  Compare to your stack: Waf is a Python-based build system, like SCons or Bazel. If your stack uses CMake, the \texttt{waf configure $\rightarrow$ waf <target>} flow maps directly to \texttt{cmake -B build \&\& cmake --build build --target <target>}. The \texttt{--board} flag is the analogue of CMake's toolchain file.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{M3 hands-on ($\sim$30 min code-along, in module budget)}
+  Each engineer on their own laptop:
+  \begin{enumerate}
+    \item \texttt{./waf configure --board sitl --debug}
+    \item \texttt{./waf plane}
+    \item Confirm \texttt{./build/sitl/bin/arduplane --help} prints usage.
+  \end{enumerate}
+  \vfill
+  This artifact is the input to Lab L1.
+  \insttiming{Configure $\sim$30 s. First build 2--5 min on a typical laptop. Reruns are incremental and fast. Pre-warm the workspace if you expect slow Wi-Fi.}
+\end{frame}
+
+%==============================================================================
+\section{Module M4 --- HAL Architecture (3.0 h, internals)}
+
+\begin{frame}{Module M4 --- HAL Architecture with adoption-seam framing}
+  \textbf{3.0 h, lecture+code-walk+lab, \emph{internals} depth.}\\[1ex]
+  HAL is the \emph{primary} extraction seam. Every adoption discussion later in the course returns to this module's framing.
+  \vfill
+  Learning objectives:
+  \begin{enumerate}
+    \item Explain why HAL exists: same flight code on STM32 (ChibiOS), Linux, SITL, ESP32.
+    \item Read \texttt{class AP\_HAL::HAL}: enumerate the 20-ish subsystems it owns.
+    \item Trace one HAL call end-to-end: \texttt{Plane::ahrs\_update} $\rightarrow$ AHRS $\rightarrow$ IMU $\rightarrow$ SITL backend.
+    \item Recognise the four canonical access patterns: \texttt{extern const AP\_HAL::HAL\& hal;}, \texttt{AP\_HAL::millis()}, \texttt{AP\_HAL::micros()}, \texttt{hal.scheduler->delay(...)}.
+    \item Read one \texttt{hwdef.dat} (CubeBlack) at the 15-min adoption side-bar.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{The class in one paragraph}
+  \texttt{AP\_HAL::HAL} is a struct of pointers to subsystem driver objects.
+  \begin{itemize}
+    \item \citerange{libraries/AP\_HAL/HAL.h}{21}{30} --- class opening + constructor signature start.
+    \item \citerange{libraries/AP\_HAL/HAL.h}{35}{90} --- full constructor parameter list: 10 UARTs, I\textsuperscript{2}C, SPI, WSPI, AnalogIn, Storage, console, GPIO, RCInput, RCOutput, Scheduler, Util, Flash.
+  \end{itemize}
+  \vfill
+  One concrete instance is constructed per build. For SITL: \citerange{libraries/AP\_HAL\_SITL/HAL\_SITL\_Class.cpp}{1}{80}. For ChibiOS hardware: the analogue under \codepath{libraries/AP\_HAL\_ChibiOS/}.
+  \vfill
+  Every consumer reaches the singleton through \texttt{extern const AP\_HAL::HAL\& hal;}.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{The four free functions every adopter needs}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_HAL/system.h}{14}{21} --- \texttt{micros16}, \texttt{micros}, \texttt{millis}, \texttt{millis16}, \texttt{micros64}, \texttt{millis64}.
+  \end{itemize}
+  \vfill
+  \texttt{AP\_HAL::millis()}: ms since boot, \texttt{uint32\_t}, \textbf{wraps every $\sim$49 days}.\\
+  \texttt{AP\_HAL::micros()}: $\mu$s since boot, \texttt{uint32\_t}, \textbf{wraps every $\sim$71 minutes}.
+  \vfill
+  ArduPilot code consistently uses the subtract-and-let-it-wrap idiom: \texttt{(now - last) * 1.0e-6f}. The 64-bit variants exist for paths that need wall-clock-relative comparisons without wrap concerns.
+  \instfaq{Why expose 16-bit variants?}{Footprint --- some embedded paths can use \texttt{uint16\_t} to keep a struct in cache or in a single register. Read at survey here; M5 returns to the scheduler at code level.}
+\end{frame}
+
+\begin{frame}[fragile]{Trace target --- \texttt{Plane::ahrs\_update}}
+  The first \texttt{FAST\_TASK} in the scheduler table runs every fast-loop tick.
+  \begin{itemize}
+    \item \citerange{ArduPlane/Plane.cpp}{165}{200} --- function body.
+  \end{itemize}
+  \vfill
+  Body is short:
+  \begin{Verbatim}[fontsize=\small,frame=single]
+void Plane::ahrs_update()
+{
+    arming.update_soft_armed();
+    ahrs.update();
+#if HAL_LOGGING_ENABLED
+    if (should_log(MASK_LOG_IMU)) {
+        AP::ins().Write_IMU();
+    }
+#endif
+    roll_limit_cd  = aparm.roll_limit*100;
+    pitch_limit_min = aparm.pitch_limit_min;
+    ...
+}
+  \end{Verbatim}
+\end{frame}
+
+\begin{frame}{What \texttt{ahrs.update()} actually does}
+  One line drives the full estimator stack on each tick.
+  \vfill
+  Drop sequence:
+  \begin{enumerate}
+    \item \texttt{AP\_AHRS::update} (the frontend).
+    \item Active EKF backend (\texttt{NavEKF3} by default for plane).
+    \item IMU read in \texttt{AP\_InertialSensor}.
+    \item Platform-specific IMU driver:
+    \begin{itemize}
+      \item On SITL: synthetic data from the physics model in \codepath{libraries/SITL/}.
+      \item On hardware: I\textsuperscript{2}C/SPI sensor read.
+    \end{itemize}
+  \end{enumerate}
+  \vfill
+  M7 reads the EKF half of this stack at code level. M6 reads the sensor frontend/backend.
+\end{frame}
+
+\begin{frame}[fragile]{The umbrella include}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_HAL/AP\_HAL.h}{1}{31} --- the umbrella header.
+  \end{itemize}
+  \vfill
+  Every consumer of HAL writes:
+  \begin{Verbatim}[fontsize=\small,frame=single]
+#include <AP_HAL/AP_HAL.h>
+extern const AP_HAL::HAL& hal;
+  \end{Verbatim}
+  \vfill
+  That header pulls in the full HAL surface plus the \texttt{extern} declaration.
+  \vfill
+  The two lines together are the contract a client signs with the platform abstraction.
+\end{frame}
+
+%------------------------------------------------------------------------------
+\begin{frame}{Adoption side-bar --- what comes with \texttt{AP\_HAL}}
+  \adoptionsidebar{
+  \textbf{What this subsystem buys you}: a clean, idiomatic abstraction over time, scheduler delay, UART, storage, and bus drivers.\\[0.5ex]
+  \textbf{What comes with it}: the full \texttt{AP\_HAL::HAL} constructor surface ($\sim$20 subsystems), \texttt{extern const AP\_HAL::HAL\& hal;} reaching everywhere, and \texttt{AP\_HAL::millis()}/\texttt{micros()} free functions.\\[0.5ex]
+  \textbf{Realistic adoption pattern}: provide a stub \texttt{AP\_HAL::HAL} against your platform's native APIs. Minimum viable surface for an algorithm-only extraction = \texttt{millis} + \texttt{micros} + a single \texttt{Scheduler::delay()}.\\[0.5ex]
+  \textbf{Cost to keep vs replace}: keeping ArduPilot's HAL means owning a wide compatibility surface forever. Replacing it (thin shim) means owning a narrow one --- but you must update it any time your extracted algorithm starts touching a new HAL function.}
+\end{frame}
+
+\ifinstructor
+\begin{frame}[allowframebreaks]{Adoption side-bar --- what comes with \texttt{AP\_HAL} (pacing)}
+  \insttiming{2--3 min. The recurring side-bar pattern starts here. Same 4-bullet shape repeats in M5--M8.}
+\end{frame}
+\fi
+
+\begin{frame}[allowframebreaks]{Board hwdef tour ($\sim$15 min adoption side-bar)}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_HAL\_ChibiOS/hwdef/CubeBlack/hwdef.dat}{1}{100} --- example board definition.
+  \end{itemize}
+  \vfill
+  Directives to recognise: \texttt{MCU}, \texttt{OSCILLATOR\_HZ}, \texttt{SERIAL\_ORDER}, \texttt{SPIDEV}, \texttt{IMU}, \texttt{BARO}, \texttt{COMPASS}, \texttt{AIRSPEED}.
+  \vfill
+  A new board is, to first approximation, a new \texttt{hwdef.dat}. Treated as an adoption side-bar here because your stack's primary interest is extracting algorithms into your own HAL, not maintaining ArduPilot as the host runtime.
+  \instadvanced{The 5-day source has a full standalone module on board porting (\siblingplane\ M12). Folded in here as a side-bar for this audience.}
+\end{frame}
+
+\begin{frame}{Compare to your stack --- HAL width}
+  Most flight stacks have a HAL boundary. The interesting comparison is \emph{width}.
+  \vfill
+  \begin{itemize}
+    \item ArduPilot's HAL is wide ($\sim$20 subsystems).
+    \item Wide HALs make \emph{porting a board} easier (the contract is exhaustive).
+    \item Wide HALs make a \emph{minimum-viable extraction} harder (you have to know which subsystems your target subsystem actually touches).
+  \end{itemize}
+  \vfill
+  In M10 we walk a minimum-viable mock HAL for \texttt{AP\_L1\_Control} --- it needs only \texttt{AP\_HAL::micros()} plus a degenerate scheduler.
+\end{frame}
+
+%------------------------------------------------------------------------------
+\section{Lab L1 --- HAL + scheduler probe (in M4)}
+
+\begin{frame}[fragile]{Lab L1 --- HAL + scheduler probe ($\sim$30 min)}
+  Detailed runnable version: \codepath{course/labs/gnc-plane-3day-pilot-l1-hal-scheduler/}.
+  \vfill
+  \textbf{Setup}: pre-built debug SITL binary at \codepath{build/sitl/bin/arduplane} from M3.
+  \vfill
+  \textbf{SITL invocation}:
+  \begin{Verbatim}[fontsize=\small,frame=single]
+Tools/autotest/sim_vehicle.py -v ArduPlane -f plane \
+  --debug --no-mavproxy
+  \end{Verbatim}
+  \vfill
+  \textbf{Procedure}: launch SITL; in a second terminal \texttt{gdb -p \$(pgrep arduplane)}; \texttt{b Plane::ahrs\_update}; \texttt{c}; on hit, \texttt{print AP\_HAL::millis()} and \texttt{print AP::scheduler().get\_loop\_rate\_hz()}; \texttt{detach}; \texttt{quit}.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{Lab L1 --- expected fingerprint and pass criterion}
+  \textbf{Expected fingerprint}:
+  \begin{itemize}
+    \item \texttt{millis()} returns a positive integer (varies per run).
+    \item Loop rate prints \textbf{50} --- the plane default per \citeline{libraries/AP\_Scheduler/AP\_Scheduler.cpp}{46}.
+  \end{itemize}
+  \vfill
+  \textbf{Pass criterion}: both prints succeed and the engineer can describe the call from \texttt{ahrs\_update} down through \texttt{ahrs.update()}.
+  \vfill
+  Lab guide: see the printed L1 student / instructor PDFs.
+  \instfaq{ptrace permission denied?}{Run \texttt{echo 0 | sudo tee /proc/sys/kernel/yama/ptrace\_scope}. One-time OS-level setting. Captured in the L1 instructor guide.}
+  \instnote{Per the L1 test report (force-disarm not relevant here --- this is a no-arm gdb-attach lab), the headless harness completes in $<$60 s. Budget 30 min interactive for discussion + the call-graph walk.}
+\end{frame}
+
+%==============================================================================
+\section{Day 1 wrap-up}
+
+\begin{frame}[allowframebreaks]{Day 1 buffer / Q\&A (30 min)}
+  Used for:
+  \begin{itemize}
+    \item \texttt{ptrace} permission.
+    \item Debug-build slowness.
+    \item Apt-mirror cascading failures (TAs handle directly).
+    \item Any leftover questions.
+  \end{itemize}
+  \instnote{Apt-mirror cascading failures on a fresh Ubuntu pre-release: check \texttt{apt-cache madison} against \texttt{archive.ubuntu.com}; if mirror is behind, switch \codepath{/etc/apt/sources.list.d/ubuntu.sources}.}
+  \insttiming{Buffer is the only slack. Resist using it for content.}
+\end{frame}
+
+\begin{frame}{Day 1 totals}
+  \begin{itemize}
+    \item Module times: 1.0 + 1.5 + 1.0 + 3.0 = \textbf{6.5 h modules}.
+    \item Buffer: 0.5 h.
+    \item \textbf{Total: 7.0 h.}
+  \end{itemize}
+  \vfill
+  Tomorrow: internals --- \texttt{AP\_Param}, sensors, AHRS/EKF lane arbitration, control pipeline. Three more labs.
+\end{frame}
+
+\begin{frame}{End of Day 1 --- what you have done}
+  \begin{itemize}
+    \item Debug SITL build of ArduPlane runs on your laptop.
+    \item Traced \texttt{Plane::ahrs\_update} through HAL into the SITL backend.
+    \item HAL boundary is the extraction seam --- the recurring frame for adoption.
+    \item Read one \texttt{hwdef.dat}; recognised the four canonical HAL access patterns.
+  \end{itemize}
+  \vfill
+  \begin{center}\large See you tomorrow.\end{center}
+\end{frame}
+
+\end{document}

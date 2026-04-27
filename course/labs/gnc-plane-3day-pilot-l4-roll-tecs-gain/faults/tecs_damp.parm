@@ -1,0 +1,4 @@
+# Phase B gain modification: lower TECS pitch damping
+# Source default: 0.3 (libraries/AP_TECS/AP_TECS.cpp:107)
+# Modified: 0.15 (halved) — expect slower, more oscillatory altitude tracking
+TECS_PTCH_DAMP 0.15

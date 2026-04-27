@@ -1,0 +1,38 @@
+% preamble.tex
+% Shared Beamer preamble for the slide decks. Loaded at the top of slides/dayN.tex.
+% Theme: metropolis (clean academic; sans-serif headings, restrained colour).
+% Aspect: 16:9 widescreen.
+% Audience: 3 senior GNC engineers, internals depth — minimal lecture aids,
+% no \pause overlays (engineers don't need incremental reveals); section frame
+% numbering on; instructor speaker notes via \instnote{} blocks.
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+
+\usetheme{metropolis}
+\setbeamertemplate{frame numbering}[fraction]
+\setbeamertemplate{footline}[frame number]
+
+% Hyperlinks: fork+branch URLs in slide-blue, no boxes.
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  linkcolor=,
+  citecolor=,
+  pdftitle={GNC Plane 3-Day Pilot --- Internals + Adoption Axis},
+  pdfsubject={ArduPlane internals for senior GNC engineers},
+  pdfauthor={material-builder},
+}
+
+% Preserve verbatim characters inside \nolinkurl-typeset cites.
+\usepackage{url}
+
+% Block colours for instructor notes --- metropolis-friendly muted palette.
+\setbeamercolor{block title}{bg=blue!10!white, fg=black}
+\setbeamercolor{block body}{bg=blue!4!white, fg=black}
+
+% Short verbatim blocks for code excerpts on internals slides (no listings,
+% no minted --- keep toolchain at portable pdflatex).
+\usepackage{fancyvrb}

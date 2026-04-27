@@ -1,0 +1,5 @@
+# GPS glitch fault injection
+# Sets a 50 m offset on the GPS X (north) channel of the first GPS sensor.
+# Full param name: SIM_GPS1_GLTCH_X (vector3 component)
+# Source: libraries/SITL/SIM_GPS.cpp:75 (GLTCH), SITL.cpp:725 (GPS1_ prefix)
+SIM_GPS1_GLTCH_X 50

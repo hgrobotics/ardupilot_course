@@ -1,0 +1,13 @@
+# Lab L3 parameters — GPS noise + EKF lane switch
+# Load these before the lab run in addition to the stock plane.parm baseline.
+
+# EK3_IMU_MASK 3 — enable two EKF3 lanes (one per IMU).
+# Source: libraries/AP_NavEKF3/AP_NavEKF3.cpp:411
+# Default is 3 (two lanes enabled by default on most builds), but setting it
+# explicitly ensures the lab environment has two lanes regardless of compile flags.
+EK3_IMU_MASK 3
+
+# LOG_BITMASK 65535 — enable all dataflash log groups including XKF1/XKF4/EV.
+# Source: ArduPlane/Parameters.cpp:633
+# Default in models/plane.parm is already 65535, included here for clarity.
+LOG_BITMASK 65535

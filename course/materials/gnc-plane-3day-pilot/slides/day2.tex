@@ -1,0 +1,671 @@
+% slides/day2.tex
+% Day 2 --- Internals: infrastructure, sensors, AHRS/EKF, control (7 h: 6.5 h modules + 0.5 h buffer)
+% Single source for student + instructor builds (gated by version-flags.tex).
+\documentclass[aspectratio=169,11pt]{beamer}
+
+\input{../shared/version-flags.tex}
+\input{../shared/preamble.tex}
+\input{../shared/macros.tex}
+
+\title{GNC Plane 3-Day Pilot --- Internals + Adoption Axis\\\large Day 2 --- Infrastructure, Sensors, AHRS/EKF, Control}
+\subtitle{Senior GNC Engineer Cohort (n=3)}
+\date{7 h --- 6.5 h modules + 0.5 h buffer}
+\author{}
+\institute{\copyrightline}
+
+\begin{document}
+
+%==============================================================================
+\begin{frame}
+  \titlepage
+  \ifinstructor
+    \footnotesize Instructor build. Speaker notes, FAQs, pacing, adoption framing, and advanced-course pointers are visible.
+  \fi
+\end{frame}
+
+\begin{frame}[allowframebreaks]{What today gets you}
+  By end of Day 2, every engineer has read at code level:
+  \begin{itemize}
+    \item \texttt{AP\_Param} --- the parameter-table macros, EEPROM mapping, the index-is-baked-in constraint.
+    \item \texttt{AP\_NavEKF3} lane-switch arbitration --- \texttt{checkLaneSwitch}, \texttt{switchLane}, \texttt{errorScore}.
+    \item \texttt{AP\_TECS::update\_pitch\_throttle} --- the energy split.
+    \item \texttt{AP\_L1\_Control::update\_waypoint} --- the lateral-acceleration command.
+    \item \texttt{AP\_RollController::get\_servo\_out} --- airspeed-scaled PID.
+  \end{itemize}
+  \vfill
+  Three labs probe each subsystem with a deliberate fault or modification.
+  \insttiming{Frame for the day. 1 min. Day 2 hands-on share is $\sim$28\% (L2+L3+L4) --- comfortably above the 25\% rubric floor.}
+\end{frame}
+
+\begin{frame}{Day 2 schedule}
+  \begin{center}\small
+  \begin{tabular}{|l|l|c|l|}\hline
+  Module & Title & Hours & Depth \\ \hline
+  M5 & Core Infrastructure Libraries (\texttt{AP\_Param} emphasis) & 2.0 & internals \\ \hline
+  M6 & Sensor Drivers, Frontend/Backend, Airspeed & 1.5 & internals \\ \hline
+  M7 & AHRS + EKF Internals (lane arbitration) & 2.0 & internals \\ \hline
+  M8 & Control Pipeline (TECS, L1, APM\_Control, SRV\_Channels) & 1.0 & internals \\ \hline
+  & Buffer / Q\&A & 0.5 & --- \\ \hline
+  \multicolumn{2}{|r|}{\textbf{Total}} & \textbf{7.0} & \\ \hline
+  \end{tabular}
+  \end{center}
+  \vfill
+  Labs: L2 (M5, $\sim$30 min), L3 (M7, $\sim$40 min), L4 (M8, $\sim$40 min).
+\end{frame}
+
+%==============================================================================
+\section{Module M5 --- Core Infrastructure (2.0 h, internals)}
+
+\begin{frame}{Module M5 --- Core Infrastructure Libraries with \texttt{AP\_Param} adoption emphasis}
+  \textbf{2.0 h, lecture+code-walk+lab, \emph{internals} depth.}\\[1ex]
+  \texttt{AP\_Param}, \texttt{AP\_Scheduler}, \texttt{AP\_Logger} are the three libraries that ``come with'' everything else when you extract.
+  \vfill
+  Learning objectives:
+  \begin{enumerate}
+    \item Read \texttt{AP\_Scheduler::Task} and \texttt{Plane::scheduler\_tasks[]}. Recognise \texttt{FAST\_TASK} vs \texttt{SCHED\_TASK(rate\_hz, max\_time\_us, priority)}.
+    \item Read the \texttt{AP\_GROUPINFO} family --- \texttt{var\_info[]} maps to EEPROM with full \texttt{@Param}/\texttt{@Range}/\texttt{@User} annotations.
+    \item Read \texttt{AP\_Logger}'s \texttt{WriteV}/\texttt{Write} API; recognise the \texttt{LogStructure} registration.
+    \item Read \texttt{AP\_Vehicle} and how \texttt{Plane : public AP\_Vehicle} consumes the framework.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{The scheduler table revisited --- \emph{at code level}}
+  \begin{itemize}
+    \item \citerange{ArduPlane/Plane.cpp}{30}{60} --- \texttt{SCHED\_TASK} and \texttt{FAST\_TASK} macro definitions.
+    \item \citerange{ArduPlane/Plane.cpp}{62}{95} --- the table itself (we saw this at survey in M1; now we read it).
+  \end{itemize}
+  \vfill
+  Two macros build entries:
+  \begin{itemize}
+    \item \texttt{FAST\_TASK(func)} --- runs every fast-loop tick (50 Hz for plane).
+    \item \texttt{SCHED\_TASK(func, rate\_hz, max\_time\_us, priority)} --- rate-limited.
+  \end{itemize}
+  \vfill
+  Fields \texttt{rate\_hz} and \texttt{max\_time\_us} are advisory: the cooperative scheduler will skip a task on a given tick if the budget is tight. \textbf{There is no pre-emption.} A task that overruns silently steals time from the next tick.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{Trade-off you must internalise --- cooperative scheduler}
+  \begin{quote}
+    Simple, predictable, \emph{and unforgiving}.
+  \end{quote}
+  \vfill
+  A 50 ms task overrun is silent --- there is no pre-emptive watchdog above the task layer.
+  \vfill
+  Compare to your stack:
+  \begin{itemize}
+    \item Pre-emptive RTOS guarantees deadlines but adds context-switch cost and lock-contention surface.
+    \item ArduPilot's cooperative model trades that determinism for simplicity and inspectability. The bug class shifts from ``deadlock'' to ``silent overrun.''
+  \end{itemize}
+  \vfill
+  Loop-rate accessors you will use in L1 / elsewhere: \citerange{libraries/AP\_Scheduler/AP\_Scheduler.h}{140}{180} --- \texttt{get\_loop\_rate\_hz()}, \texttt{get\_loop\_period\_us()}, \texttt{get\_loop\_period\_s()}.
+  \instfaq{How is overrun detected at all?}{Logged in \texttt{PM} message; not actionable mid-flight. Diagnosed offline. M9 covers log layout.}
+\end{frame}
+
+\begin{frame}{The parameter system --- \texttt{AP\_GROUPINFO} family}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_Param/AP\_Param.h}{140}{160} --- \texttt{AP\_GROUPINFO}, \texttt{AP\_GROUPINFO\_FLAGS}, \texttt{AP\_GROUPINFO\_FRAME}, \texttt{AP\_GROUPINFO\_FLAGS\_DEFAULT\_POINTER}.
+  \end{itemize}
+  \vfill
+  All expand into a \texttt{GroupInfo} struct entry carrying:
+  \begin{itemize}
+    \item Short name ($\leq$ 16 chars).
+    \item Index.
+    \item Class+member offset.
+    \item Default value.
+    \item Type.
+  \end{itemize}
+  \vfill
+  The full \texttt{@Param} comment block is parsed by an offline tool to produce the parameter manifests GCSes consume. Self-documenting at the source.
+\end{frame}
+
+\begin{frame}[fragile]{The base macro is one line; a real example}
+  \begin{Verbatim}[fontsize=\small,frame=single]
+#define AP_GROUPINFO(name, idx, clazz, element, def) \
+    AP_GROUPINFO_FLAGS(name, idx, clazz, element, def, 0)
+  \end{Verbatim}
+  \vfill
+  Real \texttt{@Param} block from ArduPlane: \citerange{ArduPlane/Parameters.cpp}{288}{310}
+  \begin{Verbatim}[fontsize=\small,frame=single]
+// @Param: AIRSPEED_MIN
+// @DisplayName: Minimum Airspeed
+// ...
+ASCALAR(airspeed_min, "AIRSPEED_MIN", AIRSPEED_FBW_MIN),
+
+// @Param: AIRSPEED_MAX
+// @DisplayName: Maximum Airspeed
+// ...
+ASCALAR(airspeed_max, "AIRSPEED_MAX", AIRSPEED_FBW_MAX),
+  \end{Verbatim}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{The hard rule --- \emph{never renumber} \texttt{AP\_GROUPINFO} indices}
+  \begin{quote}
+    The index is baked into stored user configs in EEPROM/SD. Renumbering an existing index silently corrupts user parameter sets across firmware upgrade.
+  \end{quote}
+  \vfill
+  \textbf{Only append new entries at unused indices.}
+  \vfill
+  This is the constraint your fleet-migration story has to honour, not a recommendation.
+  \instnote{When an engineer asks about migration patterns: stale-but-correct values are preferable to fresh-but-corrupted ones. The downstream adoption module returns to this in the \texttt{AP\_Param} extraction discussion.}
+\end{frame}
+
+\begin{frame}{The setup $\rightarrow$ load\_all $\rightarrow$ save lifecycle}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_Param/AP\_Param.cpp}{355}{400} --- \texttt{AP\_Param::setup()}: walks the registered top-level table, prepares the in-memory parameter graph.
+    \item \citerange{libraries/AP\_Param/AP\_Param.cpp}{1555}{1620} --- \texttt{AP\_Param::load\_all()}: reads stored values out of the EEPROM/Storage backend at boot.
+  \end{itemize}
+  \vfill
+  Saves are deferred and batched. From outside the library you reach the save through \texttt{param\_object.set\_and\_save(...)}.
+  \vfill
+  Lookup is \textbf{O(N) over the table} --- linear scan over \texttt{var\_info[]}. Mitigable by caching pointers; pay the cost once at boot, not on the hot path.
+\end{frame}
+
+\begin{frame}{\texttt{AP\_Logger} --- recognition only here, M9 returns at applied}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_Logger/AP\_Logger.h}{1}{80} --- public surface.
+  \end{itemize}
+  \vfill
+  Logging is structured: each message type is registered via a \texttt{LogStructure} typedef and given a fixed binary layout. The vehicle code calls \texttt{logger.WriteV("ATT", ...)}; the binary message lands in the dataflash.
+  \vfill
+  M9 has the recognition-level tour of the on-disk log layout.
+\end{frame}
+
+%------------------------------------------------------------------------------
+\begin{frame}[allowframebreaks]{Adoption side-bar --- what comes with \texttt{AP\_Param}}
+  \adoptionsidebar{
+  \textbf{What this subsystem buys you}: a self-documenting, GCS-discoverable, EEPROM-backed parameter system with bounded memory, range checking, and free \texttt{@Param} documentation pipelines.\\[0.5ex]
+  \textbf{What comes with it}: the \texttt{AP\_Param.h} header (\texttt{var\_info[]} macros), an EEPROM-equivalent \texttt{Storage} backend ($\geq$ 16 KB), and call sites for \texttt{setup()} and \texttt{load\_all()}. You do \emph{not} need \texttt{AP\_Logger} or \texttt{GCS\_MAVLink} to use \texttt{AP\_Param} standalone.\\[0.5ex]
+  \textbf{Cost to keep vs replace}: keeping \texttt{AP\_Param} is the single best adoption ROI in the library set --- well-bounded, the \texttt{@Param} pipeline is genuinely useful. The cost is the per-access linear-scan lookup (mitigable) and the no-renumber rule.}
+  \insttiming{2--3 min. The recurring side-bar from M4 continues.}
+\end{frame}
+
+%------------------------------------------------------------------------------
+\section{Lab L2 --- AP\_Param add (in M5)}
+
+\begin{frame}[fragile,allowframebreaks]{Lab L2 --- Add a custom \texttt{AP\_Float} parameter ($\sim$30 min)}
+  Detailed: \codepath{course/labs/gnc-plane-3day-pilot-l2-apparam-add/}.
+  \vfill
+  \textbf{Build}: apply patch (\texttt{git apply ...l2-my-param.patch}) then \texttt{./waf plane}.
+  \vfill
+  \textbf{SITL}:
+  \begin{Verbatim}[fontsize=\small,frame=single]
+Tools/autotest/sim_vehicle.py -v ArduPlane -f plane \
+  --console --no-rebuild
+  \end{Verbatim}
+  \vfill
+  \textbf{Procedure}: \texttt{param show MY\_*} (expect 17.0); \texttt{param set MY\_PARAM 42.0}; quit; relaunch; \texttt{param show MY\_*}.
+  \vfill
+  \textbf{Pass criterion}: post-restart \texttt{MY\_PARAM 42.0}. Validates \texttt{AP\_Param} EEPROM walk.
+  \instnote{L2 reached PASS in iter 1. Test report shows clean run; no flaky verdict signatures.}
+\end{frame}
+
+%==============================================================================
+\section{Module M6 --- Sensor Drivers (1.5 h, internals)}
+
+\begin{frame}{Module M6 --- Sensor Drivers, Frontend/Backend, Airspeed}
+  \textbf{1.5 h, lecture+code-walk, \emph{internals} depth.}\\[1ex]
+  Why internals: airspeed is the plane-critical sensor and the frontend/backend pattern is the \emph{most reusable} design in ArduPilot.
+  \vfill
+  Learning objectives:
+  \begin{enumerate}
+    \item Read the frontend/backend pattern: \texttt{AP\_Airspeed} (frontend) $\rightarrow$ \texttt{AP\_Airspeed\_MS4525}, \texttt{AP\_Airspeed\_SITL} (backends). Same shape as \texttt{AP\_Baro}, \texttt{AP\_GPS}, \texttt{AP\_InertialSensor}.
+    \item Read \texttt{AP\_Airspeed::get\_airspeed()} and the EAS$\leftrightarrow$TAS conversion.
+    \item Recognise where airspeed feeds: TECS (M8), EKF3 wind estimation (M7), L1 only indirectly via EKF.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{The frontend/backend shape}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_Airspeed/AP\_Airspeed.h}{1}{80} --- frontend: \texttt{get\_airspeed()}, \texttt{get\_airspeed\_ratio()}, \texttt{healthy()}, \texttt{use()}.
+    \item \citerange{libraries/AP\_Airspeed/AP\_Airspeed\_Backend.h}{1}{80} --- backend interface: \texttt{init()} + \texttt{get\_differential\_pressure()}.
+  \end{itemize}
+  \vfill
+  Frontend selects a backend per-instance from a \texttt{TYPE} parameter and owns the EAS$\leftrightarrow$TAS conversion, calibration, outlier-rejection logic.
+  \vfill
+  Two reference backends:
+  \begin{itemize}
+    \item \citerange{libraries/AP\_Airspeed/AP\_Airspeed\_SITL.cpp}{1}{80} --- canonical reference for any new backend (minimal, no platform deps).
+    \item \citerange{libraries/AP\_Airspeed/AP\_Airspeed\_MS4525.cpp}{1}{100} --- reference for a real I\textsuperscript{2}C device.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Auto-calibration against GPS groundspeed}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_Airspeed/Airspeed\_Calibration.cpp}{1}{80} --- the regression.
+  \end{itemize}
+  \vfill
+  Basic idea: with no wind, airspeed equals groundspeed. So a regression of indicated airspeed against GPS groundspeed (gated on adequate variability) refines the airspeed sensor's calibration ratio.
+  \vfill
+  ArduPilot runs this online and writes the result back to \param{ARSPD\_RATIO}.
+\end{frame}
+
+\begin{frame}{Where airspeed lands downstream}
+  \begin{itemize}
+    \item \textbf{TECS} --- speed half of the energy balance (M8).
+    \item \textbf{EKF3} --- wind-state observation when both airspeed and an alternative position source are valid (M7).
+    \item \textbf{L1} --- \emph{not} consumed directly. L1 reads ground speed and bearing through AHRS.
+  \end{itemize}
+  \vfill
+  This independence is part of why L1 is the cleanest extraction (Engineer 1's capstone).
+\end{frame}
+
+%------------------------------------------------------------------------------
+\begin{frame}[allowframebreaks]{Adoption side-bar --- what comes with \texttt{AP\_Airspeed}}
+  \adoptionsidebar{
+  \textbf{What this subsystem buys you}: a frontend/backend split with seven backends, online auto-calibration against GPS, EAS$\leftrightarrow$TAS conversion, and outlier rejection --- all gated by the parameter system.\\[0.5ex]
+  \textbf{What comes with it}: the frontend, one backend (most likely \texttt{AP\_Airspeed\_SITL} for testing plus your platform's native I\textsuperscript{2}C driver), \texttt{AP\_HAL::I2CDevice}, the \texttt{var\_info[]} table, and a small set of math helpers.\\[0.5ex]
+  \textbf{Cost to keep vs replace}: lifting \texttt{AP\_Airspeed} whole pulls in \texttt{AP\_Param} (already adopted in M5), \texttt{AP\_Logger} (optional --- auto-cal writes log), and \texttt{GCS\_SEND\_TEXT} for status. \texttt{GCS\_SEND\_TEXT} stubs cleanly. The frontend itself is small and worth keeping.}
+  \insttiming{2--3 min. M6 has no formal lab --- 10-min in-module \texttt{grep airspeed\_ratio} code-along, then move to M7.}
+\end{frame}
+
+%==============================================================================
+\section{Module M7 --- AHRS + EKF Internals (2.0 h, internals)}
+
+\begin{frame}{Module M7 --- AHRS + EKF Internals}
+  \textbf{2.0 h, lecture+code-walk+lab, \emph{internals} depth.}\\[1ex]
+  This is where the audience leans in hardest. You have built EKFs. You want ArduPilot's specific design choices: lane-switch arbitration, error-score formula, wind-state inclusion, GPS source-set selection.
+  \vfill
+  Learning objectives:
+  \begin{enumerate}
+    \item Read \texttt{AP\_AHRS} as an interface; recognise that vehicle code never calls EKF directly.
+    \item Read \texttt{NavEKF3::UpdateFilter} --- the periodic lane-arbitration loop with 10 s debounce, \texttt{coreBetterScore} test, \texttt{BETTER\_THRESH} constant.
+    \item Read \texttt{NavEKF3::checkLaneSwitch} --- the explicit ``EKF failsafe is about to trigger; can a lane swap save us?'' entry.
+    \item Read \texttt{NavEKF3\_core::errorScore} --- the consolidated metric: max of GPS / altimeter / airspeed / mag test ratios.
+    \item Read \texttt{NavEKF3::switchLane} --- the actual switch with yaw/pos reset propagation.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{AHRS hides which estimator is running}
+  Plane vehicle never calls \texttt{NavEKF3} directly. It calls \texttt{ahrs.update()}, \texttt{ahrs.get\_location()}, \texttt{ahrs.groundspeed\_vector()}, \texttt{ahrs.get\_yaw()}.
+  \vfill
+  \begin{itemize}
+    \item \citerange{libraries/AP\_AHRS/AP\_AHRS.h}{1}{80} --- frontend declaration.
+  \end{itemize}
+  \vfill
+  Active backend (EKF2, EKF3, External, DCM-only fallback) is selected at runtime. This indirection is what lets \texttt{AP\_L1\_Control} survive an estimator change.
+\end{frame}
+
+\begin{frame}{The lane-arbitration loop --- \texttt{NavEKF3::UpdateFilter}}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{910}{1020} --- the periodic body.
+  \end{itemize}
+  \vfill
+  Structure:
+  \begin{enumerate}
+    \item Run all configured cores' state-and-covariance update.
+    \item For each core, accumulate \texttt{errorScore} (consolidated test-ratio metric).
+    \item Periodically (debounced to 10 s) compare cores. If a non-primary core's score is below the primary's by \texttt{BETTER\_THRESH}, switch the primary lane.
+    \item On switch, propagate yaw and position resets so downstream consumers see a continuous state.
+  \end{enumerate}
+  \vfill
+  Key call inside: \texttt{switchLane(newPrimaryIndex)} at line 1001.
+\end{frame}
+
+\begin{frame}{The explicit failsafe path --- \texttt{NavEKF3::checkLaneSwitch}}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1029}{1062} --- the function.
+  \end{itemize}
+  \vfill
+  Called from vehicle code when the EKF failsafe is about to trigger ``we are seconds from declaring no estimate.''
+  \vfill
+  Runs an immediate (debounce-bypass) lane comparison; switches if any non-primary core has a lower \texttt{errorScore} \emph{and} is below the absolute health gate.
+  \vfill
+  This is the path that saves the aircraft when GPS glitches inject a bad innovation into the primary lane. Lab L3 forces this path.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{The actual switch --- \texttt{NavEKF3::switchLane}}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1064}{1078} --- the body.
+  \end{itemize}
+  \vfill
+  What it does:
+  \begin{itemize}
+    \item Stores the new primary index.
+    \item Requests a yaw reset and a position reset to be propagated through AHRS so \texttt{ahrs.get\_location()} returns continuous values.
+    \item Emits \texttt{GCS\_SEND\_TEXT} \texttt{"EKF3 lane switch \%u"}.
+  \end{itemize}
+  \vfill
+  The yaw and position reset propagation is the subtle part --- without it, an L1 controller would see a step in cross-track error and command a sharp roll.
+  \instnote{The \texttt{"EKF3 lane switch"} STATUSTEXT is exactly what L3 watches for. Cite \citeline{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1076} for the GCS\_SEND\_TEXT line.}
+\end{frame}
+
+\begin{frame}[fragile]{The error metric --- \texttt{NavEKF3\_core::errorScore} body}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3\_Outputs.cpp}{62}{86} --- function body.
+  \end{itemize}
+  \begin{Verbatim}[fontsize=\scriptsize,frame=single]
+float NavEKF3_core::errorScore() const
+{
+    float score = 0.0f;
+    if (tiltAlignComplete && yawAlignComplete) {
+        // Check GPS fusion performance
+        score = MAX(score, 0.5f * (velTestRatio + posTestRatio));
+        // Check altimeter fusion performance
+        score = MAX(score, hgtTestRatio);
+        if (assume_zero_sideslip()) {
+            const auto *arsp = dal.airspeed();
+            if (arsp != nullptr && arsp->get_num_sensors() >= 2 &&
+                (frontend->_affinity & EKF_AFFINITY_ARSP)) {
+                score = MAX(score, 0.3f * tasTestRatio);
+            }
+        }
+        if (frontend->_affinity & EKF_AFFINITY_MAG) {
+            score = MAX(score, 0.3f * (magTestRatio.x + magTestRatio.y + magTestRatio.z));
+        }
+    }
+    return score;
+}
+  \end{Verbatim}
+\end{frame}
+
+\begin{frame}{Reading \texttt{errorScore} aloud}
+  Score starts at zero. Gated overall by \texttt{tiltAlignComplete \&\& yawAlignComplete} --- pre-alignment, the score stays at zero and the lane is not eligible for arbitration.
+  \vfill
+  Inside the gate, \texttt{MAX}-folded over four observation channels:
+  \begin{itemize}
+    \item \textbf{GPS} --- \texttt{0.5f * (velTestRatio + posTestRatio)}. Always evaluated.
+    \item \textbf{Altimeter} --- \texttt{hgtTestRatio}, unit weight.
+    \item \textbf{Airspeed} --- \texttt{0.3f * tasTestRatio}, gated on \texttt{assume\_zero\_sideslip()}, $\geq$ 2 airspeed sensors, and \texttt{EKF\_AFFINITY\_ARSP}.
+    \item \textbf{Magnetometer} --- \texttt{0.3f * (mag.x + .y + .z)}, gated on \texttt{EKF\_AFFINITY\_MAG}.
+  \end{itemize}
+  \vfill
+  Each test ratio is the squared-Mahalanobis innovation normalised by the gate; $\leq 1$ means innovation passed. A consolidated score above $\sim 1$ means at least one observation is rejecting consistently --- the lane is unhealthy.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{The 0.3 scaling on airspeed and mag --- deliberate sensitivity reduction}
+  Source comment is explicit: the EKF must be \emph{less reactive to airspeed innovations driven by gusts} than to GPS innovations.
+  \vfill
+  Gust-driven airspeed innovations would otherwise force false lane switches in cruise.
+  \vfill
+  Same 0.3 factor on the magnetometer term --- the magnetometer has its own independent switching mechanism that the affinity flag overrides.
+  \instfaq{Why \texttt{MAX} and not \texttt{SUM}?}{Lane is unhealthy if any single observation channel is rejecting. \texttt{SUM} would mask a single bad channel behind several healthy ones.}
+\end{frame}
+
+\begin{frame}{The \texttt{EK3\_AFFINITY} parameter --- 2-min aside}
+  \texttt{EKF\_AFFINITY\_*} flags are a per-observation-type opt-in, configured by \texttt{EK3\_AFFINITY}.
+  \vfill
+  Default \texttt{EK3\_AFFINITY = 0} disables both airspeed and mag terms. The consolidated score then collapses to:
+  \begin{quote}
+    \texttt{MAX(0.5f * (velTestRatio + posTestRatio), hgtTestRatio)}
+  \end{quote}
+  \vfill
+  For a fixed-wing platform with redundant airspeed and magnetometers, enabling \texttt{EKF\_AFFINITY\_ARSP} and \texttt{EKF\_AFFINITY\_MAG} bits brings airspeed and mag into arbitration.
+  \vfill
+  This is exactly the detail Engineer 3's capstone has to confront when reimplementing the metric against a different sensor stack.
+  \begin{itemize}
+    \item Declaration: \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3\_core.h}{140}{160}
+    \item Per-tick aggregation \texttt{updateCoreErrorScores}: \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1092}{1099}
+    \item Initial primary at boot \texttt{EK3\_PRIMARY}: \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{715}{722}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Wind estimation --- structure not line-cite}
+  Airspeed-fused wind state is part of the EKF3 core's state vector when both an airspeed sensor and an alternative position source are valid.
+  \vfill
+  Fusion code lives in \codepath{AP\_NavEKF3\_PosVelFusion.cpp} (the file is large; we walk the structure in narrative rather than line-cite).
+  \vfill
+  Compare to your stack:
+  \begin{itemize}
+    \item Some EKFs publish wind as a derived output of velocity differencing.
+    \item ArduPilot models wind as part of the state, fused via airspeed innovations.
+    \item The trade-off is observability vs degeneracy --- ArduPilot's choice is consistently the more honest one when an airspeed sensor is present.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Compare to your stack --- lane arbitration}
+  Lane arbitration is the cross-cutting concern that varies most across proprietary EKFs.
+  \vfill
+  ArduPilot's choice:
+  \begin{itemize}
+    \item Single scalar consolidated \texttt{errorScore}.
+    \item \texttt{MAX}-of-test-ratios.
+    \item 10-second debounce on the periodic path.
+    \item Debounce-bypass on the failsafe path.
+  \end{itemize}
+  \vfill
+  Alternatives: per-axis health, vector-valued comparison, hysteresis on a different time constant. Comparable; the question is whether you can defend the choice in flight-test logs.
+  \vfill
+  Engineer 3's capstone in M11 lifts \emph{the arbitration logic only} into a stub repo. $\leq$ 50 lines of real algorithm.
+\end{frame}
+
+%------------------------------------------------------------------------------
+\begin{frame}[allowframebreaks]{Adoption side-bar --- what comes with \texttt{AP\_NavEKF3}}
+  \adoptionsidebar{
+  \textbf{What this subsystem buys you}: a multi-lane 24-state EKF with magnetometer-yaw alignment, wind-state, airspeed fusion, optical flow, range finder, GPS-pos and GPS-vel fusion, and a defensible lane-arbitration policy.\\[0.5ex]
+  \textbf{What comes with it}: a \emph{broad} dependency graph --- the Data Access Layer (DAL), \texttt{AP\_AHRS}, multiple sensor frontends, \texttt{AP\_Logger}, \texttt{AP\_Param}, \texttt{GCS\_SEND\_TEXT}, \texttt{AP\_Math}. \texttt{AP\_NavEKF3\_core.cpp} alone is several thousand lines.\\[0.5ex]
+  \textbf{Cost to keep vs replace}: adopting \emph{full} \texttt{AP\_NavEKF3} is a multi-quarter integration effort. Realistic adoption pattern: lift only the \textbf{lane-arbitration logic} ($\leq$ 200 lines: \texttt{checkLaneSwitch}, \texttt{switchLane}, \texttt{updateCoreErrorScores}, \texttt{errorScore}) and apply it to multiple instances of \emph{your own} EKF. That is exactly Engineer 3's capstone.}
+  \insttiming{2--3 min. The recurring side-bar shape from M4--M5--M6 continues here.}
+\end{frame}
+
+%------------------------------------------------------------------------------
+\section{Lab L3 --- GPS noise + EKF lane switch (in M7)}
+
+\begin{frame}[fragile]{Lab L3 --- GPS noise + EKF lane switch ($\sim$40 min)}
+  Detailed: \codepath{course/labs/gnc-plane-3day-pilot-l3-gps-ekf-laneswitch/}.
+  \vfill
+  \textbf{SITL}:
+  \begin{Verbatim}[fontsize=\small,frame=single]
+Tools/autotest/sim_vehicle.py -v ArduPlane -f plane \
+  --console --map -L KSFO
+  \end{Verbatim}
+  \vfill
+  \textbf{Param set}: stock plane PLUS \texttt{EK3\_IMU\_MASK 3} (force two EKF lanes), \texttt{LOG\_BITMASK 65535}.
+  \vfill
+  \textbf{Procedure}: take off in \flmode{TAKEOFF}; switch to \flmode{FBWA}; fly steady. \texttt{param set SIM\_GPS1\_NOISE 5}; $\sim$30 s later \texttt{param set SIM\_GPS1\_GLTCH\_X 50}. Wait for GCS statustext \texttt{"EKF3 lane switch \%u"}.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{Lab L3 --- pass criterion + cite anchors}
+  \textbf{Pass criterion}:
+  \begin{itemize}
+    \item \texttt{"EKF3 lane switch"} STATUSTEXT within 30 s of glitch injection.
+    \item Dataflash \texttt{EV} record exists in \codepath{logs/*.BIN}.
+  \end{itemize}
+  \vfill
+  Where the SIM params live:
+  \begin{itemize}
+    \item \citerange{libraries/SITL/SIM\_GPS.cpp}{97}{103} --- \texttt{SIM\_GPS\_NOISE}.
+    \item \citerange{libraries/SITL/SIM\_GPS.cpp}{69}{75} --- \texttt{SIM\_GPS\_GLTCH}.
+  \end{itemize}
+  \vfill
+  Lab guide: see the printed L3 student/instructor PDFs.
+  \instnote{L3 reached PASS in iter 1. Headless harness completes in $<$90 s sim. If lane switch never appears in lab, raise glitch to 100.}
+\end{frame}
+
+%==============================================================================
+\section{Module M8 --- Control Pipeline (1.0 h, internals)}
+
+\begin{frame}{Module M8 --- Control Pipeline: TECS, L1, APM\_Control, SRV\_Channels}
+  \textbf{1.0 h, lecture+code-walk+lab, \emph{internals} depth.}\\[1ex]
+  Why 1.0 h (vs 1.5 h slot in the requirements skeleton): the audience already knows PID + nav guidance. The unique-to-ArduPilot content fits in 1.0 h with Lab L4 inside.
+  \vfill
+  Learning objectives:
+  \begin{enumerate}
+    \item Read \texttt{AP\_TECS::update\_pitch\_throttle} --- entry point; energy-balance computation; \texttt{TECS\_SPDWEIGHT}.
+    \item Read \texttt{AP\_L1\_Control::update\_waypoint} --- lateral-acceleration formula; the \texttt{0.3183099 = 1/$\pi$} damping.
+    \item Read \texttt{AP\_RollController::get\_servo\_out} --- angle-error $\rightarrow$ desired-rate $\rightarrow$ PID, airspeed-scaled.
+    \item Read \texttt{SRV\_Channels::push} and the cork/push pattern.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{TECS --- energy split as code}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_TECS/AP\_TECS.cpp}{1270}{1350} --- \texttt{update\_pitch\_throttle} entry.
+    \item \citerange{libraries/AP\_TECS/AP\_TECS.cpp}{678}{700} --- \texttt{\_update\_energies}.
+    \item \citerange{libraries/AP\_TECS/AP\_TECS.cpp}{719}{820} --- \texttt{\_update\_throttle\_with\_airspeed}.
+  \end{itemize}
+  \vfill
+  Canonical TECS split:
+  \begin{itemize}
+    \item Total specific energy: $STE = h + V^2/(2g)$
+    \item Energy balance: $SEB = h - V^2/(2g)$
+    \item Throttle commanded against $STE$.
+    \item Pitch commanded against weighted blend of $STE$ and $SEB$.
+  \end{itemize}
+  \vfill
+  Blend weight: \texttt{TECS\_SPDWEIGHT} at \citeline{libraries/AP\_TECS/AP\_TECS.cpp}{99}, default 1.0, range 0--2. 1 = canonical 50/50; 0 = ignore speed (good for glider final); 2 = ignore altitude (rare).
+\end{frame}
+
+\begin{frame}{The pitch damping gain we will perturb in L4}
+  \begin{itemize}
+    \item \citeline{libraries/AP\_TECS/AP\_TECS.cpp}{107} --- \texttt{TECS\_PTCH\_DAMP}, default 0.3.
+  \end{itemize}
+  \vfill
+  L4 Phase B halves this to 0.15 to surface visible altitude-tracking oscillation.
+\end{frame}
+
+\begin{frame}{L1 --- lateral acceleration as code}
+  \begin{itemize}
+    \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{206}{347} --- \texttt{update\_waypoint(prev\_WP, next\_WP, dist\_min)}.
+    \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{7}{44} --- the four \texttt{NAVL1\_*} parameters.
+  \end{itemize}
+  \vfill
+  Computes the L1 reference vector; outputs \texttt{\_latAccDem} (lateral acceleration demand) plus \texttt{\_nav\_bearing} and \texttt{\_bearing\_error}.
+  \vfill
+  Damping factor: \texttt{0.3183099 = 1/$\pi$} applied as:
+  \begin{quote}
+    \texttt{\_L1\_dist = MAX(1/$\pi$ $\cdot$ damping $\cdot$ period $\cdot$ groundSpeed, dist\_min)}
+  \end{quote}
+  \vfill
+  Body computes the line-of-sight angle Nu from velocity and reference vectors and converts to lateral acceleration.
+\end{frame}
+
+\begin{frame}{The four L1 parameters}
+  \begin{itemize}
+    \item \param{NAVL1\_PERIOD} --- default 17 s. The dominant tuning knob.
+    \item \param{NAVL1\_DAMPING} --- default 0.75.
+    \item \param{NAVL1\_XTRACK\_I} --- default 0.02.
+    \item \param{NAVL1\_LIM\_BANK} --- default 0 (no extra bank limit beyond global aircraft limits).
+  \end{itemize}
+  \vfill
+  Engineer 1's capstone extracts \texttt{AP\_L1\_Control} into a foreign-codebase stub. These four parameters and \texttt{update\_waypoint} are the public surface they take.
+\end{frame}
+
+\begin{frame}{Roll controller --- airspeed-scaled PID}
+  \begin{itemize}
+    \item \citerange{libraries/APM\_Control/AP\_RollController.cpp}{185}{227} --- \texttt{get\_servo\_out}.
+  \end{itemize}
+  \vfill
+  Structure:
+  \begin{itemize}
+    \item Angle error (centi-degrees) $\rightarrow$ desired rate (deg/s) via time-constant $\tau$ = \param{RLL2SRV\_TCONST} (default 0.5 s) at \citeline{libraries/APM\_Control/AP\_RollController.cpp}{35}.
+    \item $\rightarrow$ rate-PID call with \texttt{scaler} arg multiplying both proportional and feed-forward terms.
+    \item \texttt{scaler} $= (V_{ref} / V_{current})^2$, computed by the caller.
+  \end{itemize}
+  \vfill
+  The scaler makes the controller behave consistently across the airspeed envelope without re-tuning.
+  \vfill
+  L4 Phase A halves \param{RLL2SRV\_TCONST} from 0.5 to 0.25 to surface a faster-but-oscillatory roll response.
+\end{frame}
+
+\begin{frame}{The rate-PID parameters --- separate indices}
+  \begin{itemize}
+    \item \citerange{libraries/APM\_Control/AP\_RollController.cpp}{27}{50} --- \texttt{RLL2SRV\_TCONST}, \texttt{RLL2SRV\_RMAX}.
+    \item \citerange{libraries/APM\_Control/AP\_RollController.cpp}{51}{100} --- the rate-PID block: \texttt{RLL\_RATE\_P}, \texttt{RLL\_RATE\_I}, \texttt{RLL\_RATE\_D}, \texttt{RLL\_RATE\_FF}.
+  \end{itemize}
+  \vfill
+  These are a separate PID with its own indices --- distinct from \texttt{RLL2SRV\_*}.
+  \vfill
+  Naming pattern is consistent across pitch and yaw controllers in the same library.
+\end{frame}
+
+\begin{frame}{SRV\_Channels --- atomic output via cork/push}
+  \begin{itemize}
+    \item \citerange{libraries/SRV\_Channel/SRV\_Channels.cpp}{478}{510} --- \texttt{cork}/\texttt{push}.
+    \item \citerange{libraries/SRV\_Channel/SRV\_Channel\_aux.cpp}{617}{680} --- \texttt{set\_output\_scaled}.
+    \item \citerange{ArduPlane/servos.cpp}{861}{900} --- \texttt{Plane::set\_servos} call site.
+  \end{itemize}
+  \vfill
+  Pattern:
+  \begin{enumerate}
+    \item \texttt{cork()} at the start of a control cycle --- latches all subsequent writes.
+    \item Any number of \texttt{set\_output\_*} calls --- update internal channel buffers, do not push to hardware.
+    \item \texttt{push()} at the end --- atomically writes all latched channels to RCOutput.
+  \end{enumerate}
+  \vfill
+  ``All servos must move on the same tick edge.''
+\end{frame}
+
+\begin{frame}{Compare to your stack --- atomic servo update}
+  Cork/push is one of several solutions:
+  \begin{itemize}
+    \item Double-buffered DMA on the RCOut driver itself.
+    \item Dedicated transaction object passed into each setter.
+    \item ArduPilot's stateful contract (you must \texttt{push} what you \texttt{cork}).
+  \end{itemize}
+  \vfill
+  ArduPilot's choice keeps call sites simple at the cost of a stateful contract --- the cooperative scheduler makes the contract easy to honour.
+  \vfill
+  When you extract a controller, you do not need to bring cork/push --- write directly to your own actuator interface.
+\end{frame}
+
+%------------------------------------------------------------------------------
+\begin{frame}{Adoption side-bar --- what comes with the control pipeline}
+  \adoptionsidebar{
+  \textbf{What this subsystem buys you}: three battle-tested controllers (L1, TECS, APM\_Control) with the same idiomatic shape --- \texttt{var\_info[]} table at top, \texttt{update}/\texttt{get\_servo\_out} method, constructor takes references to AHRS / parameter sources.\\[0.5ex]
+  \textbf{What comes with it}: \texttt{AP\_HAL::micros()}, \texttt{AP\_Param}, \texttt{AP\_AHRS} (or a stub of just the methods you call), and \texttt{AP\_Math} helpers (\texttt{is\_zero}, \texttt{safe\_sqrt}, \texttt{constrain\_float}, \texttt{wrap\_PI}). For TECS specifically: also \texttt{AP\_FixedWing::FlightStage} and (optionally) \texttt{AP\_Logger}.\\[0.5ex]
+  \textbf{Cost to keep vs replace}: L1 is the cheapest extraction in the codebase (Eng 1 capstone). TECS is one tier up (Eng 2) due to \texttt{AP\_FixedWing::FlightStage} and richer parameters. APM\_Control family is the same shape but glued into the vehicle's mode-and-stabiliser machinery, so adoption usually means lifting just the math.}
+\end{frame}
+
+\ifinstructor
+\begin{frame}[allowframebreaks]{Adoption side-bar --- control pipeline (pacing)}
+  \insttiming{2--3 min. The recurring side-bar pattern from M4--M7 closes here at M8.}
+\end{frame}
+\fi
+
+%------------------------------------------------------------------------------
+\section{Lab L4 --- Roll + TECS gain modify (in M8)}
+
+\begin{frame}{Lab L4 --- Modify roll-controller and TECS gains, observe response ($\sim$40 min)}
+  Detailed: \codepath{course/labs/gnc-plane-3day-pilot-l4-roll-tecs-gain/}.
+  \vfill
+  \textbf{Phase A (roll)}: take off, switch to \flmode{FBWA}. \texttt{param set RLL2SRV\_TCONST 0.25} (default 0.5; halves time constant). Move roll stick. Force-disarm. Plot \texttt{ATT.DesRoll} vs \texttt{ATT.Roll}.
+  \vfill
+  \textbf{Phase B (TECS)}: relaunch. \texttt{param set TECS\_PTCH\_DAMP 0.15} (default 0.3; half damping). Switch to \flmode{FBWB}; command altitude step via \texttt{rc 2 1700}. Force-disarm. Plot \texttt{TECS.h} vs \texttt{TECS.hdem}.
+  \vfill
+  \textbf{Pass criterion}: two MAVExplorer screenshots --- faster-but-oscillatory roll, damped-but-slower altitude tracking.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{Lab L4 --- known sharp edges}
+  \instnote{L4 took 5 iterations to reach PASS. The current harness uses force-disarm via \texttt{MAV\_CMD\_COMPONENT\_ARM\_DISARM} with \texttt{param2=21196} (\texttt{magic\_force\_arm\_disarm\_value}, \citeline{libraries/GCS\_MAVLink/GCS.h}{786}). Prior approaches that did NOT reach PASS: RTL+autoland (no DO\_LAND\_START mission means RTL loiters indefinitely), wait\_for\_landing, ALT\_HOLD\_RTL renaming. The pattern matches \citerange{Tools/autotest/arduplane.py}{1304}{1304} and \citerange{Tools/autotest/arduplane.py}{1623}{1623}. Use as a teaching moment about ArduPlane mode semantics --- senior pilots will appreciate the debugging history.}
+  \insttiming{40 min budgeted. Phase A is 4 min + 4 min (two SITL runs) + 3 min plot. Phase B is 8 min + 3 min plot. Code-walk of \texttt{get\_servo\_out} fills the rest. If at minute 35 still in Phase B, skip the code walk --- plots are the deliverable.}
+  \vfill
+  Phase B altitude threshold lowered from 20 m to 8 m in iter-3 because \texttt{FBWB\_CLIMB\_RATE=2.0} cannot reliably exceed 20 m in the sim window; 8 m is below the observed minimum (10 m in three runs) and still requires a real, sustained climb.
+\end{frame}
+
+%==============================================================================
+\section{Day 2 wrap-up}
+
+\begin{frame}[allowframebreaks]{Day 2 buffer / Q\&A (30 min)}
+  Common Day 2 sinks:
+  \begin{itemize}
+    \item L3 \texttt{SIM\_GPS1\_GLTCH\_X} parameter rename (binary cache vs source tree).
+    \item L4 force-disarm vs interactive RTL semantics.
+    \item EKF affinity flag exploration --- the \texttt{EK3\_AFFINITY} bitmask.
+  \end{itemize}
+  \insttiming{Resist using buffer for content. Hold for L3/L4 fallout.}
+\end{frame}
+
+\begin{frame}{Day 2 totals}
+  \begin{itemize}
+    \item Module times: 2.0 + 1.5 + 2.0 + 1.0 = \textbf{6.5 h modules}.
+    \item Buffer: 0.5 h.
+    \item \textbf{Total: 7.0 h.}
+  \end{itemize}
+  \vfill
+  Hands-on: L2 (0.5 h) + L3 (0.67 h) + L4 (0.67 h) $\approx$ 1.83 h $\approx$ 28\% of module budget.
+  \vfill
+  Tomorrow: mission/debugging, dedicated adoption module, capstone.
+\end{frame}
+
+\begin{frame}{End of Day 2 --- what you have done}
+  \begin{itemize}
+    \item Read \texttt{AP\_Param} at the macro level; added a custom parameter and watched it persist.
+    \item Read the EKF lane-switch arbitration; injected GPS noise + glitch and observed the live switch.
+    \item Read TECS energy split, L1 lateral-acceleration formula, airspeed-scaled PID; perturbed gains and observed the response.
+    \item Six recurring adoption side-bars accumulated across M4--M8 --- you can now name what each subsystem drags in.
+  \end{itemize}
+  \vfill
+  \begin{center}\large See you tomorrow.\end{center}
+\end{frame}
+
+\end{document}

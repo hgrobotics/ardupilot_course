@@ -1,0 +1,17 @@
+% version-flags.tex
+% Single-source instructor/student gating. The Makefile invokes pdflatex with
+%   \def\instructorversion{} \input{<artifact>.tex}
+% for the instructor build, and a plain include for the student build.
+% Each artifact's source begins with \input{../shared/version-flags.tex}.
+
+\newif\ifinstructor
+\newif\ifstudent
+
+% Default: student version. Instructor build sets \instructorversion via -def.
+\ifdefined\instructorversion
+  \instructortrue
+  \studentfalse
+\else
+  \instructorfalse
+  \studenttrue
+\fi

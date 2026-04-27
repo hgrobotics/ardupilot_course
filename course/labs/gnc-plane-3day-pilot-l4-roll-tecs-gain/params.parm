@@ -1,0 +1,15 @@
+# Lab L4 params — Phase A baseline (roll controller at source default)
+# These override plane.parm defaults where the lab needs the source default.
+
+# RLL2SRV_TCONST: set to source default (0.5 s) for Phase A baseline.
+# plane.parm overrides to 0.25; we restore source default for Phase A comparison.
+# Source: libraries/APM_Control/AP_RollController.cpp:35
+RLL2SRV_TCONST 0.5
+
+# TECS_PTCH_DAMP: source default is 0.3 (libraries/AP_TECS/AP_TECS.cpp:107).
+# plane.parm does not override this, so it is already at 0.3 by default.
+# Included here for clarity.
+TECS_PTCH_DAMP 0.3
+
+# LOG_BITMASK: enable all logs including ATT and TECS messages.
+LOG_BITMASK 65535

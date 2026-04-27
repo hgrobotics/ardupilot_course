@@ -181,10 +181,16 @@ entities.json
 
 # Course pipeline transient artifacts
 # - Lab test-run captures (transcripts, SITL stdout, GCS captures)
-# - Per-lab SITL stdout from headless test harnesses
+# - Per-lab SITL stdout from headless test harnesses (top-level and nested)
+# - SITL working dirs (eeprom, logs, terrain) created by sim_vehicle / arduplane
+# - Capstone gtest build trees (CMake out-of-source build_check/)
 # - Python bytecode from running lab harnesses
 # - Per-machine Claude Code overrides
 course/labs/*/runs/
-course/labs/*/*/sitl.log
+course/labs/*/sitl*.log
+course/labs/*/*/sitl*.log
+course/labs/*/sitl_workdir/
+course/labs/*/eeprom_test/
+course/labs/*/*/build_check/
 __pycache__/
 .claude/settings.local.json

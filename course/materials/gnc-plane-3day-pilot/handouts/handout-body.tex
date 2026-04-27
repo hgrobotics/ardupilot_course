@@ -1,0 +1,316 @@
+% handouts/handout-body.tex
+% Single-source handout body for student + instructor builds, gated via
+% shared/version-flags.tex. Not compiled directly --- consumed by student.tex
+% and instructor.tex (thin launchers).
+% Audience: 3 senior GNC engineers; internals depth.
+\documentclass[a4paper,11pt,twoside]{article}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, margin=2.2cm]{geometry}
+\usepackage{titling}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\setlist[enumerate]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  pdftitle={GNC Plane 3-Day Pilot --- Handout},
+}
+\usepackage{url}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+\usepackage{fancyvrb}
+
+\input{../shared/macros.tex}
+
+% Article-context redefinitions of the instructor-note macros (originally Beamer
+% blocks). Same pattern as the intro-arducopter materials.
+\renewcommand{\instnote}[1]{\ifinstructor\begin{tcolorbox}[colback=blue!4!white,colframe=blue!40!black,title=Instructor note,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\insttiming}[1]{\ifinstructor\begin{tcolorbox}[colback=orange!5!white,colframe=orange!50!black,title=Pacing,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\instfaq}[2]{\ifinstructor\begin{tcolorbox}[colback=green!4!white,colframe=green!40!black,title=Anticipated Q: #1,breakable]#2\end{tcolorbox}\fi}
+\renewcommand{\instadvanced}[1]{\ifinstructor\begin{tcolorbox}[colback=violet!5!white,colframe=violet!50!black,title=Advanced material pointer,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\adoptionsidebar}[1]{\begin{tcolorbox}[colback=cyan!4!white,colframe=cyan!50!black,title=Adoption side-bar,breakable]#1\end{tcolorbox}}
+
+\title{GNC Plane 3-Day Pilot --- Internals + Adoption Axis\\
+  \large Handout --- \ifinstructor Instructor Edition\else Student Edition\fi}
+\author{\copyrightline}
+\date{21 h / 3 days}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Codebase reference:} branch \texttt{GNC-0.1} of \href{\repourl}{\nolinkurl{hgrobotics/ardupilot_course}}. Every link in this handout opens the cited file at the named line on GitHub.
+
+\noindent\textbf{Source of truth:} the course markdown at \citefile{course/custom_gnc_course_plane_3day_pilot.md}. This handout is a printable companion --- the markdown is canonical.
+
+\ifinstructor
+\begin{tcolorbox}[colback=red!5!white,colframe=red!40!black,title=Instructor edition]
+This is the instructor edition. It contains pacing notes, anticipated student questions, capstone allocations, and pointers into the sibling 5-day course (\siblingplane) and quadplane course (\siblingquadplane). Do \textbf{not} hand this to engineers --- the student edition is the same source compiled without the instructor flag.
+\end{tcolorbox}
+\fi
+
+\section*{Audience}
+
+3 senior GNC engineers fluent in C/C++ and embedded flight code on a proprietary in-house autopilot stack. Strong in fixed-wing controls, EKF design, attitude control, energy control, lateral path-following, \texttt{gdb}, gtest. Zero ArduPilot exposure. In-person, 1:1 instructor support during labs.
+
+\section*{Vehicle, depth, hardware}
+\begin{itemize}
+  \item \textbf{Vehicle}: ArduPlane (fixed-wing). No QuadPlane content; no Copter content beyond a one-slide library mapping.
+  \item \textbf{Depth}: internals --- math-as-code, function-body walks, lane-switch arbitration as code, TECS energy split as code, L1 lateral acceleration as code.
+  \item \textbf{Hardware}: SITL only.
+\end{itemize}
+
+\section*{The framing this audience needs}
+
+You will compare every ArduPilot decision to your own stack. The course casts ArduPilot's choices as \textbf{one design among many}, not as the correct answer. We call out trade-offs explicitly:
+
+\begin{itemize}
+  \item The parameter system (\texttt{AP\_Param} + \texttt{AP\_GROUPINFO}) is highly flexible and self-documenting, but pays a per-access lookup cost (linear scan over \texttt{var\_info[]}).
+  \item The singleton pattern (\texttt{AP::scheduler()}, \texttt{AP::ins()}, etc.) is convenient but creates static-init ordering hazards and makes test isolation harder.
+  \item The cooperative scheduler is fast and predictable, but a 50 ms task overrun is silent --- there is no pre-emptive watchdog above the task layer.
+  \item The HAL is the cleanest extraction seam in the codebase, but it is wide ($\sim$20 subsystems). A minimum viable adoption HAL is a small fraction of the surface, walked in M4 and M10.
+\end{itemize}
+
+\textbf{Math-as-code, not math-on-slides.} The math is in the code; we read the code.
+
+\section*{Per-engineer capstone allocation (assigned, swappable before M11 starts)}
+\begin{itemize}
+  \item Engineer 1 $\rightarrow$ \texttt{AP\_L1\_Control} (lateral path-following, smallest extraction surface).
+  \item Engineer 2 $\rightarrow$ \texttt{AP\_TECS} (energy controller, richer entanglement).
+  \item Engineer 3 $\rightarrow$ \texttt{AP\_NavEKF3} lane-arbitration subset (\texttt{checkLaneSwitch} + \texttt{switchLane} + \texttt{errorScore}, $\leq$ 200 lines of real algorithm).
+\end{itemize}
+
+\section*{Course at a glance}
+\begin{center}\small
+\begin{tabular}{|l|p{8cm}|c|c|c|}\hline
+Day & Theme & Modules (h) & Buffer (h) & Total (h) \\ \hline
+1 & Foundations + build + HAL with adoption framing & 6.5 & 0.5 & 7.0 \\ \hline
+2 & Internals: infrastructure, sensors, AHRS/EKF, control & 6.5 & 0.5 & 7.0 \\ \hline
+3 & Mission/debug, dedicated adoption module, capstone, feedback & 6.5 & 0.5 & 7.0 \\ \hline
+\multicolumn{2}{|r|}{\textbf{Total}} & \textbf{19.5} & \textbf{1.5} & \textbf{21.0} \\ \hline
+\end{tabular}
+\end{center}
+
+\section*{Day 1 modules}
+
+\paragraph{M1 --- ArduPilot Overview \& Ecosystem (1.0 h, survey).}
+Place ArduPilot in the open-source landscape; recognise the GPLv3 posture. Recognise the 6-vehicle / shared-libraries / HAL architecture. Locate ArduPlane's main vehicle class and scheduler table; confirm the \textbf{50 Hz default fast-loop} for plane vs Copter's 400 Hz default --- and \emph{why} (fixed-wing dynamics are slower).
+\begin{itemize}
+  \item \citerange{ArduPlane/Plane.h}{1}{50} --- Plane class header anchor.
+  \item \citerange{ArduPlane/Plane.cpp}{62}{95} --- \texttt{scheduler\_tasks[]} opening with \texttt{FAST\_TASK} / \texttt{SCHED\_TASK} entries.
+  \item \citerange{libraries/AP\_Scheduler/AP\_Scheduler.cpp}{43}{49} --- \texttt{SCHEDULER\_DEFAULT\_LOOP\_RATE} 400-vs-50 selector.
+  \item \citerange{libraries/AP\_Scheduler/AP\_Scheduler.cpp}{55}{69} --- \texttt{SCHED\_LOOP\_RATE} parameter.
+  \item \citerange{course/custom_gnc_course_plane.md}{1280}{1295} --- Copter$\leftrightarrow$Plane library mapping (printed handout).
+\end{itemize}
+
+\paragraph{M2 --- Operations Essentials, compressed (1.5 h, applied).}
+Launch ArduPlane SITL; fly \flmode{TAKEOFF} $\rightarrow$ \flmode{FBWA} $\rightarrow$ \flmode{RTL}. Read MAVProxy textual telemetry. Recognise plane-specific dataflash messages (\param{ATT}, \param{CTUN}, \param{NTUN}, \param{ARSP}, \param{TECS}). The \texttt{*\_cd} suffix is centi-degrees (signed \texttt{int32\_t}).
+\begin{itemize}
+  \item \citeline{Tools/autotest/sim\_vehicle.py}{1}
+  \item \citerange{Tools/autotest/sim\_vehicle.py}{1073}{1240} --- build + sim argparse groups (\texttt{--vehicle}/\texttt{--frame}/\texttt{--debug}/\texttt{--gdb}).
+  \item \citerange{Tools/autotest/sim\_vehicle.py}{1405}{1436} --- MAVProxy GUI argparse group (\texttt{--map}/\texttt{--console}).
+  \item \citerange{ArduPlane/mode\_takeoff.cpp}{1}{80} --- \texttt{ModeTakeoff::update}.
+  \item \citerange{ArduPlane/mode\_fbwa.cpp}{1}{45} --- the entire \texttt{ModeFBWA} body.
+\end{itemize}
+
+\paragraph{M3 --- Build System \& Dev Environment (1.0 h, applied).}
+Run \texttt{./waf configure --board sitl --debug \&\& ./waf plane}. Recognise \texttt{wscript}. Recognise \texttt{AP\_<FEATURE>\_ENABLED} and the rule that core components must not depend on optional ones. Preview the file Engineer 1's capstone extracts.
+\begin{itemize}
+  \item \citefile{BUILD.md} --- long-form build reference; consult directly for unfamiliar errors.
+  \item \citerange{ArduPlane/wscript}{1}{40}
+  \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{1}{15} --- the contract: \texttt{\#include <AP\_HAL/AP\_HAL.h>}, \texttt{extern const AP\_HAL::HAL\& hal;}, opening of \texttt{var\_info[]}.
+  \item \citerange{Tools/scripts/build\_options.py}{1}{50}
+\end{itemize}
+
+\paragraph{M4 --- HAL Architecture with adoption-seam framing (3.0 h, internals).}
+HAL is the \emph{primary} extraction seam. Read \texttt{class AP\_HAL::HAL}; trace \texttt{Plane::ahrs\_update} to the SITL backend; recognise the four canonical access patterns. \textbf{Lab L1} (HAL + scheduler probe, $\sim$30 min) sits inside this module.
+\begin{itemize}
+  \item \citerange{libraries/AP\_HAL/HAL.h}{21}{30} --- class opening.
+  \item \citerange{libraries/AP\_HAL/HAL.h}{35}{90} --- constructor signature.
+  \item \citerange{libraries/AP\_HAL/system.h}{14}{21} --- four free time functions.
+  \item \citerange{libraries/AP\_HAL/AP\_HAL.h}{1}{31} --- umbrella include.
+  \item \citerange{ArduPlane/Plane.cpp}{165}{200} --- \texttt{Plane::ahrs\_update} body.
+  \item \citerange{libraries/AP\_HAL\_SITL/HAL\_SITL\_Class.cpp}{1}{80} --- SITL HAL instantiation.
+  \item \citerange{libraries/AP\_HAL\_ChibiOS/hwdef/CubeBlack/hwdef.dat}{1}{100} --- example board hwdef.
+\end{itemize}
+
+\adoptionsidebar{
+\textbf{What \texttt{AP\_HAL} buys you}: a clean abstraction over time, scheduler delay, UART, storage, bus drivers.\\
+\textbf{What comes with it}: the full \texttt{AP\_HAL::HAL} constructor surface, \texttt{extern const AP\_HAL::HAL\& hal;} reaching everywhere, and \texttt{AP\_HAL::millis()}/\texttt{micros()}.\\
+\textbf{Realistic adoption pattern}: stub \texttt{AP\_HAL::HAL} against your platform's APIs. Minimum viable surface for an algorithm-only extraction = \texttt{millis} + \texttt{micros} + a single \texttt{Scheduler::delay()}.\\
+\textbf{Cost to keep vs replace}: keeping ArduPilot's HAL means owning a wide compatibility surface forever. Replacing it (thin shim) means owning a narrow one --- but you must update it any time your extracted algorithm starts touching a new HAL function.}
+
+\section*{Day 2 modules}
+
+\paragraph{M5 --- Core Infrastructure Libraries with \texttt{AP\_Param} adoption emphasis (2.0 h, internals).}
+\texttt{AP\_Param}, \texttt{AP\_Scheduler}, \texttt{AP\_Logger} --- the three libraries that ``come with'' everything else. Hard rule: \textbf{never renumber \texttt{AP\_GROUPINFO} indices}. \textbf{Lab L2} (\texttt{AP\_Param} add + observe, $\sim$30 min) sits inside this module.
+\begin{itemize}
+  \item \citerange{ArduPlane/Plane.cpp}{30}{60} --- \texttt{SCHED\_TASK}/\texttt{FAST\_TASK} macros.
+  \item \citerange{libraries/AP\_Param/AP\_Param.h}{140}{160} --- \texttt{AP\_GROUPINFO} family.
+  \item \citerange{libraries/AP\_Param/AP\_Param.cpp}{355}{400} --- \texttt{AP\_Param::setup}.
+  \item \citerange{libraries/AP\_Param/AP\_Param.cpp}{1555}{1620} --- \texttt{AP\_Param::load\_all}.
+  \item \citerange{ArduPlane/Parameters.cpp}{288}{310} --- real \texttt{@Param} block (\texttt{AIRSPEED\_MIN}/\texttt{MAX}).
+  \item \citerange{libraries/AP\_Scheduler/AP\_Scheduler.h}{140}{180} --- loop-rate accessors.
+  \item \citerange{libraries/AP\_Logger/AP\_Logger.h}{1}{80} --- logger interface.
+\end{itemize}
+
+\adoptionsidebar{
+\textbf{What \texttt{AP\_Param} buys you}: self-documenting, GCS-discoverable, EEPROM-backed parameter system with bounded memory, range checking, free \texttt{@Param} pipelines.\\
+\textbf{What comes with it}: the \texttt{AP\_Param.h} header, an EEPROM-equivalent \texttt{Storage} backend ($\geq$ 16 KB), and call sites for \texttt{setup()} + \texttt{load\_all()}. You do NOT need \texttt{AP\_Logger} or \texttt{GCS\_MAVLink}.\\
+\textbf{Cost to keep vs replace}: best adoption ROI in the library set. Cost is per-access linear-scan lookup (mitigable) and the no-renumber rule.}
+
+\paragraph{M6 --- Sensor Drivers, Frontend/Backend, Airspeed (1.5 h, internals).}
+The frontend/backend pattern is the \emph{most reusable} design in ArduPilot. Same shape as \texttt{AP\_Baro}, \texttt{AP\_GPS}, \texttt{AP\_InertialSensor}. Airspeed feeds TECS (M8) and EKF3 wind estimation (M7); L1 \emph{not} directly --- which is part of why L1 is the cleanest extraction.
+\begin{itemize}
+  \item \citerange{libraries/AP\_Airspeed/AP\_Airspeed.h}{1}{80}
+  \item \citerange{libraries/AP\_Airspeed/AP\_Airspeed\_Backend.h}{1}{80}
+  \item \citerange{libraries/AP\_Airspeed/AP\_Airspeed\_SITL.cpp}{1}{80}
+  \item \citerange{libraries/AP\_Airspeed/AP\_Airspeed\_MS4525.cpp}{1}{100}
+  \item \citerange{libraries/AP\_Airspeed/Airspeed\_Calibration.cpp}{1}{80}
+\end{itemize}
+
+\adoptionsidebar{
+\textbf{What \texttt{AP\_Airspeed} buys you}: frontend/backend split with seven backends, online auto-calibration against GPS, EAS$\leftrightarrow$TAS conversion.\\
+\textbf{What comes with it}: the frontend, one backend, \texttt{AP\_HAL::I2CDevice}, \texttt{var\_info[]}, math helpers.\\
+\textbf{Cost to keep vs replace}: pulls in \texttt{AP\_Param} (already adopted in M5), \texttt{AP\_Logger} (optional), \texttt{GCS\_SEND\_TEXT} (easy to stub).}
+
+\paragraph{M7 --- AHRS + EKF Internals (2.0 h, internals).}
+The lane-switch arbitration is where this audience leans in hardest. Read \texttt{NavEKF3::UpdateFilter}, \texttt{checkLaneSwitch}, \texttt{switchLane}, and \texttt{NavEKF3\_core::errorScore} as code. \textbf{Lab L3} (GPS noise + EKF lane switch, $\sim$40 min) sits inside this module.
+\begin{itemize}
+  \item \citerange{libraries/AP\_AHRS/AP\_AHRS.h}{1}{80} --- frontend.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{910}{1020} --- \texttt{UpdateFilter} arbitration loop.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1029}{1062} --- \texttt{checkLaneSwitch}.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1064}{1078} --- \texttt{switchLane}.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1092}{1099} --- \texttt{updateCoreErrorScores}.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3\_Outputs.cpp}{62}{86} --- \texttt{errorScore} body (function ends at 86).
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3\_core.h}{140}{160} --- \texttt{errorScore} declaration.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{715}{722} --- \texttt{EK3\_PRIMARY}.
+\end{itemize}
+
+\paragraph{The \texttt{errorScore} formula --- read aloud.}
+Score is gated by \texttt{tiltAlignComplete \&\& yawAlignComplete}. Inside the gate, \texttt{MAX}-folded over four channels:
+\begin{itemize}
+  \item GPS: \texttt{0.5f * (velTestRatio + posTestRatio)} --- always evaluated.
+  \item Altimeter: \texttt{hgtTestRatio} --- unit weight.
+  \item Airspeed: \texttt{0.3f * tasTestRatio}, gated on \texttt{assume\_zero\_sideslip()}, $\geq$ 2 sensors, \texttt{EKF\_AFFINITY\_ARSP}.
+  \item Magnetometer: \texttt{0.3f * (mag.x + .y + .z)}, gated on \texttt{EKF\_AFFINITY\_MAG}.
+\end{itemize}
+The 0.3 factor on airspeed and mag is a deliberate sensitivity reduction --- gust-driven airspeed innovations would otherwise force false lane switches in cruise. The \texttt{EK3\_AFFINITY} parameter selects which observation channels participate.
+
+\adoptionsidebar{
+\textbf{What \texttt{AP\_NavEKF3} buys you}: a multi-lane 24-state EKF with mag-yaw alignment, wind-state, airspeed/optical-flow/range-finder fusion, and a defensible lane-arbitration policy.\\
+\textbf{What comes with it}: a broad dependency graph --- the DAL, \texttt{AP\_AHRS}, multiple sensor frontends, \texttt{AP\_Logger}, \texttt{AP\_Param}, \texttt{GCS\_SEND\_TEXT}, \texttt{AP\_Math}.\\
+\textbf{Cost to keep vs replace}: full extraction is multi-quarter. Realistic adoption: lift only the lane-arbitration logic ($\leq$ 200 lines) and apply to multiple instances of \emph{your own} EKF. Engineer 3's capstone.}
+
+\paragraph{M8 --- Control Pipeline: TECS, L1, APM\_Control, SRV\_Channels (1.0 h, internals).}
+\textbf{Lab L4} (roll + TECS gain modify, $\sim$40 min) sits inside this module.
+\begin{itemize}
+  \item \citerange{libraries/AP\_TECS/AP\_TECS.cpp}{1270}{1350} --- \texttt{update\_pitch\_throttle}.
+  \item \citerange{libraries/AP\_TECS/AP\_TECS.cpp}{678}{700} --- \texttt{\_update\_energies}.
+  \item \citerange{libraries/AP\_TECS/AP\_TECS.cpp}{719}{820} --- \texttt{\_update\_throttle\_with\_airspeed}.
+  \item \citeline{libraries/AP\_TECS/AP\_TECS.cpp}{99} --- \texttt{TECS\_SPDWEIGHT} (default 1.0, range 0--2).
+  \item \citeline{libraries/AP\_TECS/AP\_TECS.cpp}{107} --- \texttt{TECS\_PTCH\_DAMP} (default 0.3 --- L4 perturbs to 0.15).
+  \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{206}{347} --- \texttt{update\_waypoint}.
+  \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{7}{44} --- L1 \texttt{var\_info[]} (\texttt{NAVL1\_PERIOD} 17 s, \texttt{NAVL1\_DAMPING} 0.75, \texttt{NAVL1\_XTRACK\_I} 0.02, \texttt{NAVL1\_LIM\_BANK} 0).
+  \item \citerange{libraries/APM\_Control/AP\_RollController.cpp}{185}{227} --- \texttt{get\_servo\_out}.
+  \item \citerange{libraries/APM\_Control/AP\_RollController.cpp}{27}{50} --- \texttt{RLL2SRV\_TCONST} (default 0.5, line 35), \texttt{RLL2SRV\_RMAX}.
+  \item \citerange{libraries/APM\_Control/AP\_RollController.cpp}{51}{100} --- rate-PID block (\texttt{RLL\_RATE\_*}).
+  \item \citerange{libraries/SRV\_Channel/SRV\_Channels.cpp}{478}{510} --- \texttt{cork}/\texttt{push}.
+  \item \citerange{libraries/SRV\_Channel/SRV\_Channel\_aux.cpp}{617}{680} --- \texttt{set\_output\_scaled}.
+  \item \citerange{ArduPlane/servos.cpp}{861}{900} --- \texttt{Plane::set\_servos} call site.
+\end{itemize}
+
+\paragraph{TECS energy split.} Total specific energy $STE = h + V^2/(2g)$; energy balance $SEB = h - V^2/(2g)$. Throttle commanded against $STE$; pitch commanded against weighted blend of $STE$ and $SEB$. Blend weight is \texttt{TECS\_SPDWEIGHT} (default 1.0 = 50/50 split).
+
+\paragraph{L1 lateral acceleration.} Damping factor \texttt{0.3183099 = 1/$\pi$}. \texttt{\_L1\_dist = MAX(1/$\pi$ $\cdot$ damping $\cdot$ period $\cdot$ groundSpeed, dist\_min)}.
+
+\paragraph{Roll PID scaler.} \texttt{scaler $= (V_{ref} / V_{current})^2$} --- makes the controller behave consistently across the airspeed envelope without re-tuning.
+
+\adoptionsidebar{
+\textbf{What the control pipeline buys you}: three battle-tested controllers (L1, TECS, APM\_Control) with the same idiomatic shape.\\
+\textbf{What comes with it}: \texttt{AP\_HAL::micros()}, \texttt{AP\_Param}, \texttt{AP\_AHRS} (or stub), \texttt{AP\_Math} helpers. TECS adds \texttt{AP\_FixedWing::FlightStage} and (optional) \texttt{AP\_Logger}.\\
+\textbf{Cost to keep vs replace}: L1 is the cheapest extraction (Eng 1). TECS one tier up (Eng 2). APM\_Control family same shape but glued into vehicle's mode/stabiliser machinery; usually lift just the math.}
+
+\section*{Day 3 modules}
+
+\paragraph{M9 --- Mission, Navigation, Debugging (combined + compressed) (2.0 h, applied).}
+Mission storage + dispatch. Auto $\rightarrow$ L1 hand-off. \texttt{gdb} + SITL workflow. Autotest framework recognition. gtest harness (Eng 3's capstone uses it). Log layout recognition.
+\begin{itemize}
+  \item \citerange{libraries/AP\_Mission/AP\_Mission.h}{1}{100}
+  \item \citerange{ArduPlane/mode\_auto.cpp}{1}{80}
+  \item \citerange{ArduPlane/Plane.h}{1104}{1115} --- \texttt{// navigation.cpp} declaration block; \texttt{Plane::navigate} at line 1107.
+  \item \citeline{ArduPlane/Plane.h}{269} --- \texttt{nav\_controller = \&L1\_controller}.
+  \item \citerange{Tools/autotest/sim\_vehicle.py}{1073}{1240} --- argparse build + sim groups (re-used from M2; \texttt{--gdb} at line 1213).
+  \item \citerange{Tools/autotest/arduplane.py}{36}{100}
+  \item \citerange{Tools/autotest/arduplane.py}{213}{260} --- \texttt{fly\_LOITER}.
+  \item \citerange{libraries/AP\_Logger/LogStructure.h}{1}{100}
+\end{itemize}
+
+\paragraph{M10 --- Adopting ArduPilot subsystems into a proprietary codebase (NEW) (2.0 h, internals).}
+The four extraction-seam patterns: (a) library + stub HAL; (b) library + replace \texttt{AP\_Param}; (c) math/algorithm only + reimplement wiring; (d) black-box ArduPilot via MAVLink/DDS. Worked example: \texttt{AP\_L1\_Control}. Stretch: \texttt{AP\_TECS}. Hardest: \texttt{AP\_NavEKF3} lane-switch subset. \textbf{GPLv3 obligation is your organisation's call.}
+\begin{itemize}
+  \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.h}{1}{138}
+  \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{1}{15}
+  \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{7}{44}
+  \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{206}{347}
+  \item \citerange{libraries/AP\_TECS/AP\_TECS.cpp}{1}{30} --- TECS file header.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1029}{1078} --- lane-switch subset.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3\_Outputs.cpp}{62}{86} --- \texttt{errorScore}.
+  \item \citerange{libraries/AP\_HAL/HAL.h}{21}{90} --- the seam.
+  \item \citerange{libraries/AP\_HAL/system.h}{14}{21} --- the four free functions.
+  \item \citerange{libraries/AP\_Math/AP\_Math.h}{1}{100} --- math helpers.
+\end{itemize}
+
+\paragraph{M11 --- Capstone: extract one subsystem (2.5 h, solo lab).}
+Each engineer extracts their pre-allocated subsystem into a stub repo, makes a failing gtest pass, presents the entanglement they hit at the end. Setup pre-staged at \codepath{course/labs/gnc-plane-3day-pilot-l5-capstone/}.
+
+\paragraph{M11.5 --- Feedback session (0.5 h).}
+Per-module: was the depth right? Per-lab: did the lab teach what the M-of-day intended? Adoption axis: did the M4--M8 side-bars accumulate? Did M10 land? Did the capstone produce an artifact each engineer expects to use?
+
+\section*{Labs}
+
+The five labs (L1--L5) are fully specified in their own per-lab guides under \codepath{course/materials/gnc-plane-3day-pilot/lab-guides/}. The student edition of each is the printed lab guide handed out at the start of the lab. The instructor edition adds pacing, common-failure tables, verdict signatures, and pointers to advanced material.
+
+\begin{center}\small
+\begin{tabular}{|l|l|l|p{4.5cm}|}\hline
+Lab & In module & Time & Pass criterion \\ \hline
+L1 & M4 (Day 1) & $\sim$30 min & gdb at \texttt{Plane::ahrs\_update}; \texttt{millis()}>0 and \texttt{loop\_rate}=50. \\ \hline
+L2 & M5 (Day 2) & $\sim$30 min & \texttt{MY\_PARAM 42.0} persists across SITL restart. \\ \hline
+L3 & M7 (Day 2) & $\sim$40 min & \texttt{"EKF3 lane switch"} STATUSTEXT within 30 s of glitch; EV in dataflash. \\ \hline
+L4 & M8 (Day 2) & $\sim$40 min & MAVExplorer plots show roll-rate change with \texttt{TCONST}; alt-track change with \texttt{PTCH\_DAMP}. \\ \hline
+L5 & M11 (Day 3) & 2.5 h & \texttt{ctest} prints \texttt{100\% tests passed} on extracted subsystem. \\ \hline
+\end{tabular}
+\end{center}
+
+\instnote{Lab L4 went through 5 iterations to reach PASS. The current harness uses force-disarm via \texttt{MAV\_CMD\_COMPONENT\_ARM\_DISARM} \texttt{param2=21196} (\texttt{magic\_force\_arm\_disarm\_value}, \citeline{libraries/GCS\_MAVLink/GCS.h}{786}). Pattern matches \citeline{Tools/autotest/arduplane.py}{1304} and \citeline{Tools/autotest/arduplane.py}{1623}. Senior engineers may find this debugging history useful as a teaching moment about ArduPilot's mode semantics --- specifically, that ArduPlane RTL without a DO\_LAND\_START mission loiters at \texttt{RTL\_ALTITUDE} indefinitely and does not auto-land.}
+
+\section*{Acronyms}
+\begin{itemize}
+  \item \textbf{HAL} --- Hardware Abstraction Layer.
+  \item \textbf{SITL} --- Software In The Loop.
+  \item \textbf{EKF} --- Extended Kalman Filter (state estimator).
+  \item \textbf{AHRS} --- Attitude and Heading Reference System (the abstraction; EKF implements it).
+  \item \textbf{TECS} --- Total Energy Control System (combined altitude + airspeed controller).
+  \item \textbf{L1} --- Lateral path-following controller (Park, Deyst, How 2004).
+  \item \textbf{TECS, L1} --- the two flagship controllers extracted in the capstone.
+  \item \textbf{IMU} --- Inertial Measurement Unit.
+  \item \textbf{GCS} --- Ground Control Station (MAVProxy in this course).
+  \item \textbf{MAVLink} --- the binary message protocol.
+  \item \textbf{EAS / TAS} --- Equivalent / True Air Speed.
+  \item \textbf{NVM} --- Non-Volatile Memory (EEPROM + SD on real boards; flat file in SITL).
+  \item \textbf{DAL} --- Data Access Layer (the indirection between EKF and sensor frontends).
+  \item \textbf{Waf} --- ArduPilot's Python-based build system.
+\end{itemize}
+
+\section*{Sibling courses}
+\begin{itemize}
+  \item \siblingplane\ --- 5-day version with QuadPlane omitted. Contains M12 board-porting deep dive, M13 Lua, M14 integration project, M15 Pegasus, M16 advanced workshop.
+  \item \siblingquadplane\ --- QuadPlane / VTOL transition state machines. Out of scope for this 3-day pilot.
+\end{itemize}
+
+\end{document}

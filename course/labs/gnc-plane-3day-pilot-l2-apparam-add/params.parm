@@ -1,0 +1,5 @@
+# Lab L2 params — stock plane parameters
+# No SITL-stress parameters needed.
+# MY_PARAM is added to the source tree via the patch, not loaded from here.
+# After the patch is applied and the binary rebuilt, MY_PARAM will appear
+# with its default value (17.0) automatically.

@@ -1,0 +1,37 @@
+--- a/ArduPlane/Parameters.h
++++ b/ArduPlane/Parameters.h
+@@ -590,6 +590,10 @@ public:
+ #if AP_RANGEFINDER_ENABLED
+     // orientation of rangefinder to use for landing
+     AP_Int8 rangefinder_land_orient;
+
+     // distance to the landing point to engage the rangefinder for landing
+     AP_Int16 rangefinder_land_engage_dist_m;
+ #endif
+
+ #if AP_PLANE_SYSTEMID_ENABLED
+     AP_SystemID systemid;
+ #endif
++
++    // Lab L2 parameter — added during GNC course Day 2 Module M5 exercise
++    AP_Float my_param;
+ };
+
+ extern const AP_Param::Info var_info[];
+--- a/ArduPlane/Parameters.cpp
++++ b/ArduPlane/Parameters.cpp
+@@ -1290,6 +1290,17 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
+     AP_GROUPINFO("RNGFND_LND_DIST", 41, ParametersG2, rangefinder_land_engage_dist_m, 0),
+ #endif
+
++    // @Param: MY_PARAM
++    // @DisplayName: Lab exercise parameter
++    // @Description: A demonstration AP_Float added during the GNC Day 2 lab to
++    //   illustrate the full AP_GROUPINFO lifecycle. Default 17.0; engineers
++    //   change it to 42.0 and confirm NVM persistence across a SITL restart.
++    // @Range: 0 100
++    // @User: Advanced
++    AP_GROUPINFO("MY_PARAM", 42, ParametersG2, my_param, 17.0f),
++
+     AP_GROUPEND
+ };

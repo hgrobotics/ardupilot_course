@@ -1,0 +1,3 @@
+# GPS glitch restore — clears the injected fault
+SIM_GPS1_GLTCH_X 0
+SIM_GPS1_NOISE 0

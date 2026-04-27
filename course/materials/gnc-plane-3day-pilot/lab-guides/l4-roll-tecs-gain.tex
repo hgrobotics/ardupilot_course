@@ -1,0 +1,316 @@
+% lab-guides/l4-roll-tecs-gain.tex
+% Single source for Lab L4 student + instructor PDFs.
+% Special note: L4 went through 5 iterations to PASS. The instructor edition
+% surfaces the iter-5 force-disarm pattern + the prior-approach debugging
+% history (gated behind \instnote{}). Senior pilots may find the history useful
+% as a teaching moment about ArduPlane mode semantics.
+\documentclass[a4paper,11pt,twoside]{article}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, margin=2.2cm]{geometry}
+\usepackage{titling}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\setlist[enumerate]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  pdftitle={Lab L4 --- Roll Controller + TECS Gain Modify},
+}
+\usepackage{url}
+\usepackage{fancyvrb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+\usepackage{array}
+\usepackage{longtable}
+
+\input{../shared/macros.tex}
+
+\renewcommand{\instnote}[1]{\ifinstructor\begin{tcolorbox}[colback=blue!4!white,colframe=blue!40!black,title=Instructor note,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\insttiming}[1]{\ifinstructor\begin{tcolorbox}[colback=orange!5!white,colframe=orange!50!black,title=Pacing,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\instfaq}[2]{\ifinstructor\begin{tcolorbox}[colback=green!4!white,colframe=green!40!black,title=Anticipated Q: #1,breakable]#2\end{tcolorbox}\fi}
+\renewcommand{\instadvanced}[1]{\ifinstructor\begin{tcolorbox}[colback=violet!5!white,colframe=violet!50!black,title=Advanced material pointer,breakable]#1\end{tcolorbox}\fi}
+
+\title{Lab L4 --- Roll Controller + TECS Gain Modify\\
+  \large \ifinstructor Instructor Guide\else Student Guide\fi}
+\author{\copyrightline}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Codebase reference:} branch \texttt{GNC-0.1} of \href{\repourl}{\nolinkurl{hgrobotics/ardupilot_course}}. Every link in this lab guide opens the cited file at the named line on GitHub.
+
+\bigskip
+
+\ifinstructor
+% =============================================================================
+% INSTRUCTOR EDITION
+% =============================================================================
+
+\begin{tcolorbox}[colback=red!5!white,colframe=red!40!black,title=Instructor edition]
+This is the instructor edition. Do \textbf{not} hand this to the engineer --- the student edition is the same source compiled without the instructor flag.
+\end{tcolorbox}
+
+\section*{Lab summary for the instructor}
+
+\textbf{Learning objective:} The engineer can change a live controller gain, fly a repeatable test manoeuvre, and produce before/after log plots that show the effect. Secondary: trace the gain parameter back to the source code line where it is read (\citeline{libraries/APM\_Control/AP\_RollController.cpp}{35} for \texttt{TCONST}, \citeline{libraries/AP\_TECS/AP\_TECS.cpp}{107} for \texttt{PTCH\_DAMP}), connecting the MAVLink parameter name to the C++ variable.
+
+\textbf{Depth:} internals --- the engineer is expected to describe \emph{where} in the roll controller algorithm \texttt{gains.tau} is used (the lag filter in \texttt{get\_servo\_out}, \citerange{libraries/APM\_Control/AP\_RollController.cpp}{185}{227}) and \emph{where} in TECS \texttt{\_ptchDamp} is applied to the pitch demand.
+
+\textbf{Feed-forward:} Phase A prepares for the capstone adoption axis --- the engineer extracting \texttt{AP\_L1\_Control} will immediately recognise the \texttt{AP\_GROUPINFO} + \texttt{AP\_Float} pattern. Phase B connects to the TECS energy-balance derivation from M8.
+
+\instnote{\textbf{L4 took 5 iterations to reach PASS.} The current harness uses force-disarm via \texttt{MAV\_CMD\_COMPONENT\_ARM\_DISARM} with \texttt{param2=21196} (\texttt{magic\_force\_arm\_disarm\_value}, \citeline{libraries/GCS\_MAVLink/GCS.h}{786}). Prior approaches that did NOT reach PASS:
+\begin{itemize}
+  \item RTL+autoland: ArduPlane RTL without a DO\_LAND\_START mission loiters at \texttt{RTL\_ALTITUDE} indefinitely; no auto-descent. Test wait\_for\_landing timed out.
+  \item \texttt{wait\_for\_landing} helper: same root cause as above.
+  \item \texttt{ALT\_HOLD\_RTL} renaming: confused the wait helper, did not fix the actual loiter.
+\end{itemize}
+The final pattern matches the autotest-framework's own approach at \citeline{Tools/autotest/arduplane.py}{1304} and \citeline{Tools/autotest/arduplane.py}{1623}. Senior engineers will appreciate this debugging history --- it is a teaching moment about ArduPilot's mode semantics. Specifically: ArduPlane RTL without a stored mission is a loiter, not a landing; force-disarm bypasses all in-flight checks; the student-facing path still uses \texttt{mode RTL} interactively because the engineer is at the keyboard and can drop the throttle / kill the sim.}
+
+\section*{Pacing}
+
+\begin{center}\small
+\begin{tabular}{|p{6cm}|p{4cm}|}\hline
+\textbf{Step} & \textbf{Wall time} \\ \hline
+Launch + baseline params & 2 min \\ \hline
+Takeoff + FBWA + roll inputs (baseline) & 4 min \\ \hline
+Re-launch + set TCONST=0.25 + roll inputs & 4 min \\ \hline
+MAVExplorer plot comparison & 3 min \\ \hline
+Phase B setup + altitude step (2 runs) & 8 min \\ \hline
+MAVExplorer TECS plot & 3 min \\ \hline
+Discussion: code walk of \texttt{get\_servo\_out} & 8 min \\ \hline
+\textbf{Total} & \textbf{$\sim$32 min} \\ \hline
+\end{tabular}
+\end{center}
+
+Budget 40 min per the plan. If at minute 35 still in Phase B, skip the code walk --- the plots are the deliverable.
+
+\section*{Pre-arm setup checklist}
+
+\begin{itemize}[label={[ ]}]
+  \item \codepath{build/sitl/bin/arduplane} exists, stock build (no MY\_PARAM patch).
+  \item \texttt{pymavlink} installed.
+  \item MAVExplorer available: \texttt{python3 Tools/autotest/MAVExplorer.py --help} should not raise ImportError.
+  \item Projector shows \citerange{libraries/APM\_Control/AP\_RollController.cpp}{27}{35} (TCONST definition) and \citerange{libraries/AP\_TECS/AP\_TECS.cpp}{99}{107} (SPDWEIGHT, PTCH\_DAMP).
+  \item Remind engineers that \codepath{models/plane.parm} sets \texttt{RLL2SRV\_TCONST 0.25} by default --- loading the lab \texttt{params.parm} resets to source default 0.5 for the comparison.
+\end{itemize}
+
+\section*{Common failures and what to say}
+
+\begin{center}\footnotesize
+\begin{tabular}{|p{4.5cm}|p{4.0cm}|p{6.0cm}|}\hline
+\textbf{Symptom / exit code} & \textbf{Diagnostic} & \textbf{What to say} \\ \hline
+Both plots identical (exit code 3 --- roll range $<$ 10 deg) & \texttt{param show RLL2SRV\_TCONST} & ``Param not changed between runs. Load \texttt{params.parm} for baseline, then set 0.25 for run 2.'' \\ \hline
+RC overrides have no effect in FBWA & \texttt{mode} in MAVProxy & ``Confirm mode is FBWA. In GUIDED, RC overrides ignored.'' \\ \hline
+No \texttt{TECS.h} field in MAVExplorer & MAVExplorer file list & ``TECS is a dataflash message, not telemetry. Open the .BIN, not .tlog.'' \\ \hline
+Altitude step $<$ 8 m (exit code 6) & \texttt{param show FBWB\_CLIMB\_RATE}; last 30 lines of \codepath{sitl.log} & ``Default \texttt{FBWB\_CLIMB\_RATE=2.0} produces $\sim$10--15 m gain over 8 s wall (80 sim-s at speedup=10). If $<$ 8 m, confirm engineer is in FBWB (not CRUISE), sending \texttt{rc 2 1700} (nose-up, NOT 1300), and 8 s hold completed. Threshold lowered to 8 m in iter-3.'' \\ \hline
+Phase B never starts / disarm not confirmed after Phase A & Last 30 lines of \codepath{sitl.log} & ``Headless harness force-disarms after Phase A using \texttt{MAV\_CMD\_COMPONENT\_ARM\_DISARM} \texttt{param2=21196}. If force-disarm times out, check SITL is still running. If SITL exited, binary may have segfaulted --- re-run \texttt{./waf plane}.'' \\ \hline
+\end{tabular}
+\end{center}
+
+\section*{Verdict signatures}
+
+The headless harness checks (per the L4 test report at \codepath{course/labs/gnc-plane-3day-pilot-l4-roll-tecs-gain/runs/}):
+
+\begin{enumerate}
+  \item \texttt{RLL2SRV\_TCONST} SET acked at 0.25.
+  \item \texttt{ATT.Roll} varies $\geq$ 10 degrees during roll excitation.
+  \item \texttt{RLL2SRV\_TCONST} restored to 0.5.
+  \item \texttt{TECS\_PTCH\_DAMP} SET acked at 0.15.
+  \item Altitude change $\geq$ 8 m during altitude step (iter-3: was $\geq$ 20 m).
+  \item \texttt{TECS\_PTCH\_DAMP} restored to 0.3.
+  \item Both phases use force-disarm (\texttt{param2=21196}) rather than RTL+autoland.
+\end{enumerate}
+
+The student-facing deliverable is two MAVExplorer screenshots per phase.
+
+\insttiming{L4 reached PASS in iter 5. Per the test report, the iter-5 harness is stable; verdict signatures 1, 2, 3, 4, 6, 7 have been clean across multiple runs. Verdict 5 (alt $\geq$ 8 m) was the threshold tuned in iter 3 --- the observed minimum across three independent runs is 10 m, so 8 m is safely below the floor.}
+
+\section*{Phase B altitude threshold rationale (iter-3)}
+
+The Signature 5 pass/fail threshold was lowered from 20 m to \textbf{8 m} in iter-3. Reason: default \texttt{FBWB\_CLIMB\_RATE=2.0} m/sim-s with \texttt{ch2=1700} (normalised $\sim$0.5) drives the TECS altitude demand at $\sim$1 m/sim-s, but TECS closed-loop pitch response is slower than the demand. In bare headless SITL at speedup=10, the aircraft achieves 10--15 m of actual altitude gain in 80 sim-s (8 wall-s). 20 m was structurally unachievable without raising \texttt{FBWB\_CLIMB\_RATE} or waiting much longer.
+
+The 8 m threshold sits below the observed minimum (10 m in three independent runs) and still requires a real, sustained climb --- it cannot be satisfied by sensor noise.
+
+\textbf{The pedagogical point is unchanged.} Engineers observe the response \emph{shape} (\texttt{TECS.h} vs \texttt{TECS.hdem} convergence rate and overshoot) between \texttt{PTCH\_DAMP=0.3} and \texttt{PTCH\_DAMP=0.15}.
+
+\textbf{Optional extension for advanced groups:} If you want a more dramatic step, set \texttt{FBWB\_CLIMB\_RATE 5.0} before Phase B. Restore to 2.0 afterwards.
+
+\section*{Pointers to advanced material}
+
+\instadvanced{When an engineer asks ``what is the correct gain for my vehicle?'': the downstream GNC course (\siblingplane) covers root-locus derivation for \texttt{TCONST} on Day 3. For now: \texttt{TCONST} is the first-order lag time constant in the error filter; halving it doubles the bandwidth but also halves the margin. Safe range per \texttt{@Range}: [0.4, 1.0] s.}
+
+\instadvanced{When an engineer asks ``why does plane.parm override TCONST to 0.25?'': the SITL physics model is faster than a real aircraft (no inertia, no aerodynamic lag), so tighter gains are needed to make the sim feel responsive. On real hardware 0.25 s would likely produce oscillation. This is why HIL tuning differs from SITL tuning.}
+
+\else
+% =============================================================================
+% STUDENT EDITION
+% =============================================================================
+
+\section*{What you will do}
+
+In this lab you will change two controller gains while ArduPlane SITL is running, fly reproducible manoeuvres at each gain value, download the logs, and compare the responses in MAVExplorer.
+
+\textbf{Phase A} focuses on the roll time constant (\texttt{RLL2SRV\_TCONST}): you will see in the \texttt{ATT.DesRoll} vs \texttt{ATT.Roll} plot how a smaller time constant makes the roll track faster but introduces overshoot.
+
+\textbf{Phase B} focuses on the TECS pitch damping coefficient (\texttt{TECS\_PTCH\_DAMP}): you will see in the \texttt{TECS.h} vs \texttt{TECS.hdem} plot how lower damping changes the altitude-step response.
+
+The combined result is a concrete, observable answer to ``what does a gain do?'', grounded in the actual ArduPilot source at \citeline{libraries/APM\_Control/AP\_RollController.cpp}{35} and \citeline{libraries/AP\_TECS/AP\_TECS.cpp}{107}.
+
+\section*{Before you start}
+
+\begin{itemize}
+  \item Stock SITL binary built: \texttt{./waf configure --board sitl \&\& ./waf plane} (no source patches).
+  \item \texttt{pymavlink} installed: \texttt{pip3 install pymavlink}.
+  \item MAVExplorer available: \texttt{pip3 install mavproxy}.
+  \item Source tree clean (no L2 patch).
+  \item One terminal in the repo root.
+\end{itemize}
+
+\section*{Phase A --- Roll time constant}
+
+\subsection*{Step 1 --- Start SITL and load baseline params}
+\begin{Verbatim}[frame=single,fontsize=\small]
+Tools/autotest/sim_vehicle.py -v ArduPlane -f plane --console --map --no-rebuild
+\end{Verbatim}
+In MAVProxy:
+\begin{Verbatim}[frame=single,fontsize=\small]
+param load course/labs/gnc-plane-3day-pilot-l4-roll-tecs-gain/params.parm
+\end{Verbatim}
+Sets \texttt{RLL2SRV\_TCONST 0.5} (source default, before plane.parm overrides it).
+
+\subsection*{Step 2 --- Take off and cruise}
+\begin{Verbatim}[frame=single,fontsize=\small]
+mode TAKEOFF
+arm throttle
+\end{Verbatim}
+Wait for altitude $> 50$ m, then \texttt{mode FBWA}.
+
+\subsection*{Step 3 --- Fly baseline roll inputs}
+Apply stick deflections to excite roll:
+\begin{Verbatim}[frame=single,fontsize=\small]
+rc 1 1300
+\end{Verbatim}
+Hold 2 s. Then \texttt{rc 1 1700}; hold 2 s. Then \texttt{rc 1 1500}. Repeat 2--3 times. Return to wings-level.
+
+\subsection*{Step 4 --- Quit and save baseline log}
+\begin{Verbatim}[frame=single,fontsize=\small]
+mode RTL
+\end{Verbatim}
+Plane returns home and loiters. Once circling above home, force a clean disarm:
+\begin{Verbatim}[frame=single,fontsize=\small]
+disarm force
+\end{Verbatim}
+Then \texttt{quit}. Note log file: \texttt{ls logs/*.BIN | tail -1}.
+
+\textit{Note}: ArduPlane RTL without a DO\_LAND\_START mission loiters at \texttt{RTL\_ALTITUDE} rather than auto-landing. \texttt{disarm force} bypasses the in-flight check.
+
+\subsection*{Step 5 --- Relaunch with modified gain}
+Relaunch SITL. In MAVProxy:
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set RLL2SRV_TCONST 0.25
+\end{Verbatim}
+Repeat Step 3.
+
+\subsection*{Step 6 --- Compare roll plots}
+\begin{Verbatim}[frame=single,fontsize=\small]
+python3 Tools/autotest/MAVExplorer.py logs/00000001.BIN
+\end{Verbatim}
+Graph: \texttt{ATT.DesRoll} and \texttt{ATT.Roll} overlaid. Export plot.
+
+Open the modified-gain log and repeat. Compare.
+
+\subsection*{Step 7 --- Restore}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set RLL2SRV_TCONST 0.5
+\end{Verbatim}
+Quit SITL.
+
+\section*{Phase B --- TECS pitch damping}
+
+\subsection*{Step 8 --- Relaunch SITL with baseline TECS param}
+\begin{Verbatim}[frame=single,fontsize=\small]
+Tools/autotest/sim_vehicle.py -v ArduPlane -f plane --console --map --no-rebuild
+\end{Verbatim}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param load course/labs/gnc-plane-3day-pilot-l4-roll-tecs-gain/params.parm
+\end{Verbatim}
+
+\subsection*{Step 9 --- Take off and enter FBWB mode}
+\begin{Verbatim}[frame=single,fontsize=\small]
+mode TAKEOFF
+arm throttle
+\end{Verbatim}
+Wait for altitude $> 50$ m, then \texttt{mode FBWB}.
+
+FBWB is used here because RC pitch input (ch2) directly commands a climb rate. In CRUISE the autopilot manages altitude internally and RC pitch does not produce a consistent altitude step.
+
+\subsection*{Step 10 --- Command an altitude step}
+In FBWB:
+\begin{Verbatim}[frame=single,fontsize=\small]
+rc 2 1700
+\end{Verbatim}
+Hold 8 s. Then \texttt{rc 2 1500}.
+
+FBWB locks the current altitude when stick returns to centre. Observe \texttt{TECS.h} and \texttt{TECS.hdem}. Expect roughly 10--15 m altitude gain. The exact height is not key --- look for the \emph{response shape}: how quickly the aircraft settles, whether it overshoots. Shape changes visibly between \texttt{TECS\_PTCH\_DAMP=0.3} and \texttt{0.15}.
+
+\subsection*{Step 11 --- Quit and save baseline log}
+\begin{Verbatim}[frame=single,fontsize=\small]
+mode RTL
+\end{Verbatim}
+Once circling, force-disarm:
+\begin{Verbatim}[frame=single,fontsize=\small]
+disarm force
+\end{Verbatim}
+Then \texttt{quit}.
+
+\subsection*{Step 12 --- Relaunch with modified TECS damping}
+Relaunch SITL.
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set TECS_PTCH_DAMP 0.15
+\end{Verbatim}
+Repeat Steps 9--10.
+
+\subsection*{Step 13 --- Compare altitude plots}
+\begin{Verbatim}[frame=single,fontsize=\small]
+python3 Tools/autotest/MAVExplorer.py logs/00000002.BIN
+\end{Verbatim}
+Graph: \texttt{TECS.h} and \texttt{TECS.hdem} overlaid.
+
+\subsection*{Step 14 --- Restore}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set TECS_PTCH_DAMP 0.3
+\end{Verbatim}
+Quit SITL.
+
+\section*{What success looks like}
+\begin{itemize}
+  \item Phase A: two plots showing \texttt{ATT.Roll} tracking \texttt{ATT.DesRoll} --- visibly faster with \texttt{TCONST=0.25} but with overshoot, slower and cleaner with \texttt{TCONST=0.5}.
+  \item Phase B: two plots showing \texttt{TECS.h} converging to \texttt{TECS.hdem} after $\sim$ 10--15 m altitude step --- the 0.15 damping run shows more oscillation or slower settling than the 0.3 baseline. Absolute altitude change is modest by design; focus on convergence shape.
+\end{itemize}
+
+If the plots look identical, you may not have reloaded baseline between runs. Check \texttt{param show RLL2SRV\_TCONST} and \texttt{param show TECS\_PTCH\_DAMP} before each run.
+
+\section*{Common mistakes and quick fixes}
+
+\begin{enumerate}
+  \item \textbf{Both plots look the same} --- check \texttt{param show RLL2SRV\_TCONST} before each run. If 0.25 when expected 0.5, baseline param load was not executed. Re-run \texttt{param load params.parm}.
+  \item \textbf{Roll inputs have no effect} --- not in FBWA. \texttt{mode FBWA}; confirm HUD shows \texttt{FBWA}.
+  \item \textbf{\texttt{mode FBWB} has no effect on altitude} --- confirm the mode indicator is \texttt{FBWB}. Confirm you are sending \texttt{rc 2 1700} (nose-up), NOT 1300 (nose-down). In FBWB, only nose-up commands a climb. Climb is gradual --- expect 10--15 m over 8 s.
+  \item \textbf{\texttt{TECS.h} not visible in MAVExplorer} --- TECS messages are dataflash only, not telemetry stream. Open the \texttt{.BIN}, not \texttt{.tlog}.
+  \item \textbf{Log number wrong} --- each SITL run creates a new log. \texttt{ls logs/*.BIN}.
+\end{enumerate}
+
+\section*{Where to go next}
+
+Lab L5 (Module M11 --- capstone extraction) is a different kind of lab: you will extract one ArduPilot subsystem into a standalone gtest project. See \codepath{course/labs/gnc-plane-3day-pilot-l5-capstone/} for your assigned sub-directory.
+
+\fi
+
+\end{document}

@@ -1,0 +1,4 @@
+# Phase A gain modification: faster roll time constant
+# Source default: 0.5 s (libraries/APM_Control/AP_RollController.cpp:35)
+# Modified: 0.25 s (halved) — expect faster but more oscillatory roll response
+RLL2SRV_TCONST 0.25

@@ -1,0 +1,222 @@
+% lab-guides/l2-apparam-add.tex
+% Single source for Lab L2 student + instructor PDFs.
+\documentclass[a4paper,11pt,twoside]{article}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, margin=2.2cm]{geometry}
+\usepackage{titling}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\setlist[enumerate]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  pdftitle={Lab L2 --- AP_GROUPINFO Add + Observe},
+}
+\usepackage{url}
+\usepackage{fancyvrb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+\usepackage{array}
+\usepackage{longtable}
+
+\input{../shared/macros.tex}
+
+\renewcommand{\instnote}[1]{\ifinstructor\begin{tcolorbox}[colback=blue!4!white,colframe=blue!40!black,title=Instructor note,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\insttiming}[1]{\ifinstructor\begin{tcolorbox}[colback=orange!5!white,colframe=orange!50!black,title=Pacing,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\instfaq}[2]{\ifinstructor\begin{tcolorbox}[colback=green!4!white,colframe=green!40!black,title=Anticipated Q: #1,breakable]#2\end{tcolorbox}\fi}
+\renewcommand{\instadvanced}[1]{\ifinstructor\begin{tcolorbox}[colback=violet!5!white,colframe=violet!50!black,title=Advanced material pointer,breakable]#1\end{tcolorbox}\fi}
+
+\title{Lab L2 --- AP\_GROUPINFO Add + Observe\\
+  \large \ifinstructor Instructor Guide\else Student Guide\fi}
+\author{\copyrightline}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Codebase reference:} branch \texttt{GNC-0.1} of \href{\repourl}{\nolinkurl{hgrobotics/ardupilot_course}}. Every link in this lab guide opens the cited file at the named line on GitHub.
+
+\bigskip
+
+\ifinstructor
+% =============================================================================
+% INSTRUCTOR EDITION
+% =============================================================================
+
+\begin{tcolorbox}[colback=red!5!white,colframe=red!40!black,title=Instructor edition]
+This is the instructor edition. Do \textbf{not} hand this to the engineer --- the student edition is the same source compiled without the instructor flag.
+\end{tcolorbox}
+
+\section*{Lab summary for the instructor}
+
+\textbf{Learning objective:} The engineer can add a typed parameter to a live ArduPilot vehicle class, annotate it correctly with \texttt{@Param}, add an \texttt{AP\_GROUPINFO} entry at a unique index, rebuild, and observe the parameter through the MAVLink \texttt{PARAM\_VALUE} stream. Secondary objective: confirm NVM persistence via the EEPROM re-read on restart.
+
+\textbf{Depth:} internals --- engineers are reading \codepath{ArduPlane/Parameters.cpp} and \texttt{AP\_PARAM\_FLAG\_*} defines, not just clicking in a GCS.
+
+\textbf{Feed-forward:} \texttt{AP\_GROUPINFO} is the universal parameter registration mechanism across all ArduPilot subsystems. Every subsequent lab modifies or observes parameters from this same table. Understanding the index-is-baked-in constraint here prevents confusion when engineers look at real subsystems in M5's code walk.
+
+\section*{Pacing}
+
+\begin{center}\small
+\begin{tabular}{|p{6cm}|p{4cm}|}\hline
+\textbf{Step} & \textbf{Wall time} \\ \hline
+Patch apply + rebuild & 1--3 min \\ \hline
+SITL launch + \texttt{param show} & $<$ 1 min \\ \hline
+\texttt{param set} + restart + verify & 2--3 min \\ \hline
+Discussion: how EEPROM maps to NVM on real hardware & 5--10 min \\ \hline
+Clean-up (\texttt{git checkout}) & $<$ 1 min \\ \hline
+\textbf{Total} & \textbf{$\sim$15 min} \\ \hline
+\end{tabular}
+\end{center}
+
+Budget 30 min including M5's code walk of \texttt{AP\_GROUPINFO} internals. If you are at minute 25 and still on Step 6, compress the discussion --- the data point (42.0 persists) is the essential outcome.
+
+\section*{Pre-arm setup checklist}
+
+\begin{itemize}[label={[ ]}]
+  \item \texttt{git status} shows a clean tree (no pending modifications to \codepath{ArduPlane/}).
+  \item SITL binary built: \codepath{build/sitl/bin/arduplane} exists.
+  \item \texttt{pymavlink} installed in the Python env the test harness uses.
+  \item Projector shows \codepath{ArduPlane/Parameters.cpp} around line 1290 so engineers can see the \texttt{AP\_GROUPEND} they are inserting before. Reference: \citerange{ArduPlane/Parameters.cpp}{288}{310} for a real \texttt{@Param} block.
+\end{itemize}
+
+\section*{Common failures and what to say}
+
+\begin{center}\footnotesize
+\begin{tabular}{|p{4.5cm}|p{4.0cm}|p{6.0cm}|}\hline
+\textbf{Symptom / exit code} & \textbf{Diagnostic} & \textbf{What to say} \\ \hline
+\texttt{MY\_PARAM} not in list (exit code 2) & \texttt{file build/sitl/bin/arduplane}; \texttt{strings ... | grep MY\_PARAM} & ``The binary was not rebuilt after patching. Run \texttt{./waf plane} and re-launch SITL.'' \\ \hline
+Compilation error: \texttt{no member named 'my\_param' in 'ParametersG2'} & \texttt{grep my\_param ArduPlane/Parameters.h} & ``The .h change is missing. Check both files: \texttt{git diff --stat}.'' \\ \hline
+Index conflict & \texttt{grep '42,' ArduPlane/Parameters.cpp} & ``Index 42 is taken. Find a gap (e.g. 43), change the patch.'' \\ \hline
+\texttt{MY\_PARAM} reverts after restart (exit code 4) & \texttt{ls -t *.bin eeprom.bin} from SITL workdir & ``EEPROM file is in a different directory. Run both launches from the repo root with \texttt{--no-rebuild}.'' \\ \hline
+SET not acked (exit code 3) & SITL stdout & ``Rare. Restart SITL; first session may have exited before EEPROM flush.'' \\ \hline
+\end{tabular}
+\end{center}
+
+\section*{Verdict signatures}
+
+The headless harness checks (per the L2 test report at \codepath{course/labs/gnc-plane-3day-pilot-l2-apparam-add/runs/}):
+
+\begin{enumerate}
+  \item \texttt{PARAM\_VALUE} for \texttt{MY\_PARAM} in \texttt{[16.9, 17.1]} on the first connection.
+  \item \texttt{PARAM\_VALUE} for \texttt{MY\_PARAM} in \texttt{[41.9, 42.1]} after SET.
+  \item \texttt{PARAM\_VALUE} for \texttt{MY\_PARAM} in \texttt{[41.9, 42.1]} on the second connection.
+\end{enumerate}
+
+An engineer who reports ``42.0 persisted'' has passed.
+
+\insttiming{L2 reached PASS in iter 1. No flaky verdict signatures.}
+
+\section*{Pointers to advanced material}
+
+\instadvanced{When an engineer asks ``what happens if two subsystems accidentally use the same index?'': the compile-time check is a static assert in \citefile{libraries/AP\_Param/AP\_Param.cpp} that catches duplicates within the same group. But mismatched indices across restarts --- a firmware upgrade that inserts a parameter at an existing index --- silently writes the wrong value. This is the ``indices are baked into user configs'' constraint; it matters when migrating a production fleet. M10 returns to this when the engineers extract \texttt{AP\_TECS} and see how to isolate the parameter table from the vehicle binary.}
+
+\else
+% =============================================================================
+% STUDENT EDITION
+% =============================================================================
+
+\section*{What you will do}
+
+In this lab you will modify two ArduPlane source files to add a brand-new parameter (\texttt{MY\_PARAM}) to the \texttt{ParametersG2} struct, rebuild SITL, and watch the parameter show up live in the running sim at its default value of 17.0. You will then change it to 42.0 and restart SITL to confirm the value survives the restart --- demonstrating ArduPilot's NVM persistence mechanism.
+
+This is the fastest way to understand why \texttt{AP\_GROUPINFO} index numbers matter and how the parameter table drives both MAVLink exposure and EEPROM storage. Every subsystem you look at in later modules uses this exact pattern.
+
+\section*{Before you start}
+
+\begin{itemize}
+  \item Working SITL binary from Module M3. A standard (non-debug) build is fine: \texttt{./waf configure --board sitl \&\& ./waf plane}.
+  \item \texttt{pymavlink} installed: \texttt{pip3 install pymavlink}.
+  \item Both \codepath{ArduPlane/Parameters.h} and \codepath{ArduPlane/Parameters.cpp} in their unmodified state (\texttt{git status} shows no changes).
+  \item One terminal in the repository root.
+\end{itemize}
+
+\section*{The steps}
+
+\subsection*{Step 1 --- Apply the source patch}
+\begin{Verbatim}[frame=single,fontsize=\small]
+git apply course/labs/gnc-plane-3day-pilot-l2-apparam-add/patch/l2-my-param.patch
+\end{Verbatim}
+This adds \texttt{AP\_Float my\_param;} to \texttt{ParametersG2} in \codepath{Parameters.h} and one \texttt{AP\_GROUPINFO("MY\_PARAM", 42, ...)} entry in \codepath{Parameters.cpp}.
+
+You can also apply the changes by hand --- open the patch file and follow the \texttt{+} lines.
+
+\subsection*{Step 2 --- Rebuild}
+\begin{Verbatim}[frame=single,fontsize=\small]
+./waf plane
+\end{Verbatim}
+Typically 10--20 s (incremental). Confirm \texttt{[2/2]} or similar; no compilation errors.
+
+\subsection*{Step 3 --- Start SITL}
+\begin{Verbatim}[frame=single,fontsize=\small]
+Tools/autotest/sim_vehicle.py -v ArduPlane -f plane --console --no-rebuild
+\end{Verbatim}
+
+\subsection*{Step 4 --- Show MY\_PARAM at its default}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param show MY_*
+\end{Verbatim}
+Expect: \texttt{MY\_PARAM 17.000000}.
+
+\subsection*{Step 5 --- Change MY\_PARAM}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set MY_PARAM 42.0
+\end{Verbatim}
+Expect: \texttt{Set MY\_PARAM to 42.000000}.
+
+\subsection*{Step 6 --- Quit SITL}
+In MAVProxy: \texttt{quit} or \texttt{Ctrl-C}.
+
+\subsection*{Step 7 --- Restart SITL (same directory)}
+\begin{Verbatim}[frame=single,fontsize=\small]
+Tools/autotest/sim_vehicle.py -v ArduPlane -f plane --console --no-rebuild
+\end{Verbatim}
+
+\subsection*{Step 8 --- Verify persistence}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param show MY_*
+\end{Verbatim}
+Expect: \texttt{MY\_PARAM 42.000000}.
+
+\subsection*{Step 9 --- Restore default and clean up}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set MY_PARAM 17.0
+\end{Verbatim}
+Quit SITL. Then:
+\begin{Verbatim}[frame=single,fontsize=\small]
+git checkout ArduPlane/Parameters.h ArduPlane/Parameters.cpp
+\end{Verbatim}
+
+\section*{What success looks like}
+\begin{itemize}
+  \item After Step 4: \texttt{MY\_PARAM 17.000000} in MAVProxy.
+  \item After Steps 5--8: \texttt{MY\_PARAM 42.000000} in MAVProxy on the new session.
+\end{itemize}
+
+If \texttt{MY\_PARAM} is not in the list, the binary was not rebuilt after patching. Stop SITL, run \texttt{./waf plane}, retry.
+
+If after restart you still see \texttt{17.0}, EEPROM was not written (or was cleared). Most common cause: SITL was launched from a different working directory on the second launch.
+
+\section*{Common mistakes and quick fixes}
+
+\begin{enumerate}
+  \item \textbf{MY\_PARAM not visible at all} --- you forgot \texttt{./waf plane}. Rebuild and re-launch.
+  \item \textbf{Compilation error: index 42 already used} --- two \texttt{AP\_GROUPINFO} entries share index 42. Open \codepath{Parameters.cpp}, search for \texttt{42,} in \texttt{ParametersG2::var\_info}, assign a different unused index.
+  \item \textbf{MY\_PARAM reverts to 17.0 after restart} --- SITL launched from a different directory; the EEPROM file is a different file. Launch both from the repo root with \texttt{--no-rebuild}.
+  \item \textbf{\texttt{param show MY\_*} returns nothing, even after rebuild} --- patch may have a typo. Check the line reads exactly \texttt{AP\_GROUPINFO("MY\_PARAM", 42, ParametersG2, my\_param, 17.0f)} and that \texttt{my\_param} is declared in the class body in \codepath{Parameters.h}.
+  \item \textbf{\texttt{git apply} fails with ``already applied''} --- the patch was applied before. \texttt{git status}; if files are already modified, skip Step 1.
+\end{enumerate}
+
+\section*{Where to go next}
+
+Lab L3 (Module M7 --- GPS noise + EKF lane switch) uses a stock build with no source modifications. Revert your patch first (\texttt{git checkout ArduPlane/Parameters.h ArduPlane/Parameters.cpp}) before proceeding.
+
+\fi
+
+\end{document}

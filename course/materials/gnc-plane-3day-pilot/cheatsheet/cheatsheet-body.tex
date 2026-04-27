@@ -1,0 +1,169 @@
+% cheatsheet-body.tex
+% The actual cheatsheet content. Loaded by cheatsheet.tex (which sets up the
+% document class, packages, and macros).
+
+\begin{document}
+
+\begin{center}
+{\Large\bfseries GNC Plane 3-Day Pilot --- Internals + Adoption Cheat Sheet}\\[0.5ex]
+\ifinstructor\textit{Instructor edition}\else\textit{Student edition}\fi\quad\textbar\quad
+\copyrightline\quad\textbar\quad
+branch \texttt{GNC-0.1} of \href{\repourl}{\nolinkurl{hgrobotics/ardupilot_course}}
+\end{center}
+
+\hrule
+\vspace{0.4ex}
+
+\begin{multicols}{2}
+
+%==============================================================================
+\section*{One-shot SITL launch}
+\begin{itemize}\footnotesize
+  \item \texttt{./waf configure --board sitl --debug}
+  \item \texttt{./waf plane}
+  \item \texttt{Tools/autotest/sim\_vehicle.py -v ArduPlane -f plane --console --map}
+  \item Add \texttt{--gdb} to debug under gdb (M9, L1).
+  \item Add \texttt{--no-mavproxy} for headless gdb-attach (L1 path).
+\end{itemize}
+
+\section*{MAVProxy commands you actually use}
+\footnotesize
+\texttt{mode <NAME>}, \texttt{arm throttle}, \texttt{disarm}, \texttt{disarm force},
+\texttt{rc <chan> <pwm>}, \texttt{param show <NAME>}, \texttt{param set <NAME> <VAL>},
+\texttt{param load <FILE>}, \texttt{quit}.
+
+\section*{Plane flight modes used in the labs}
+\begin{itemize}\footnotesize
+  \item \flmode{TAKEOFF} --- automated take-off (L3, L4).
+  \item \flmode{FBWA} --- stabilised manual; sticks $\rightarrow$ desired roll/pitch (L4 Phase A).
+  \item \flmode{FBWB} --- adds altitude hold; sticks $\rightarrow$ climb/descent rate (L4 Phase B).
+  \item \flmode{CRUISE} --- altitude + heading hold.
+  \item \flmode{RTL} --- return to launch; loiters at \texttt{RTL\_ALTITUDE} (no auto-land without DO\_LAND\_START).
+  \item \flmode{AUTO} --- mission execution.
+\end{itemize}
+
+\section*{Plane dataflash messages}
+\begin{itemize}\footnotesize
+  \item \param{ATT} --- Roll, Pitch, Yaw, DesRoll, DesPitch, DesYaw.
+  \item \param{CTUN} --- throttle out, target alt vs baro.
+  \item \param{NTUN} --- L1 lateral state.
+  \item \param{ARSP} --- airspeed (raw, calibrated, EAS$\leftrightarrow$TAS).
+  \item \param{TECS} --- h, hdem, dh, dhdem, spdem, sp.
+  \item \param{XKF1}--\param{XKF5} --- EKF3 internals.
+  \item \param{EV} --- discrete events (lane switches, mode changes).
+\end{itemize}
+
+\section*{Critical ArduPlane invariants}
+\begin{itemize}\footnotesize
+  \item \textbf{Plane fast-loop = 50 Hz} (Copter = 400 Hz). Override via \texttt{SCHED\_LOOP\_RATE} (range 50--400, reboot required).
+  \item \textbf{Cooperative scheduler}: no pre-emption; a 50 ms task overrun is silent.
+  \item \textbf{\texttt{*\_cd} suffix} = centi-degrees, signed \texttt{int32\_t}. Canonical integer angle unit in vehicle code.
+  \item \textbf{Never renumber \texttt{AP\_GROUPINFO} indices.} The index is baked into stored configs.
+  \item \textbf{Never run \texttt{waf} with \texttt{sudo}}.
+  \item \textbf{\texttt{AP\_HAL::millis()} wraps every $\sim$49 days; \texttt{micros()} every $\sim$71 min.} Use the subtract-and-let-it-wrap idiom.
+\end{itemize}
+
+\section*{HAL access patterns (the four)}
+\begin{itemize}\footnotesize
+  \item \texttt{\#include <AP\_HAL/AP\_HAL.h>} --- umbrella include.
+  \item \texttt{extern const AP\_HAL::HAL\& hal;} --- the singleton handle.
+  \item \texttt{AP\_HAL::millis()} / \texttt{micros()} --- free time functions.
+  \item \texttt{hal.scheduler->delay(...)} --- the only \texttt{Scheduler} call most algorithms need.
+\end{itemize}
+
+\section*{Cite anchors --- M4 (HAL)}
+\begin{itemize}\footnotesize
+  \item \citerange{libraries/AP\_HAL/HAL.h}{21}{30}
+  \item \citerange{libraries/AP\_HAL/HAL.h}{35}{90}
+  \item \citerange{libraries/AP\_HAL/system.h}{14}{21}
+  \item \citerange{ArduPlane/Plane.cpp}{165}{200} --- \texttt{Plane::ahrs\_update}.
+  \item \citerange{libraries/AP\_HAL\_SITL/HAL\_SITL\_Class.cpp}{1}{80}
+\end{itemize}
+
+\section*{Cite anchors --- M5 (\texttt{AP\_Param})}
+\begin{itemize}\footnotesize
+  \item \citerange{libraries/AP\_Param/AP\_Param.h}{140}{160} --- \texttt{AP\_GROUPINFO} family.
+  \item \citerange{libraries/AP\_Param/AP\_Param.cpp}{355}{400} --- \texttt{setup}.
+  \item \citerange{libraries/AP\_Param/AP\_Param.cpp}{1555}{1620} --- \texttt{load\_all}.
+  \item \citerange{ArduPlane/Parameters.cpp}{288}{310} --- real \texttt{@Param} block.
+\end{itemize}
+
+\section*{Cite anchors --- M7 (EKF lane switch)}
+\begin{itemize}\footnotesize
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{910}{1020} --- \texttt{UpdateFilter} arbitration loop.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1029}{1062} --- \texttt{checkLaneSwitch}.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1064}{1078} --- \texttt{switchLane}.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1092}{1099} --- \texttt{updateCoreErrorScores}.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3\_Outputs.cpp}{62}{86} --- \texttt{errorScore}.
+  \item \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{715}{722} --- \texttt{EK3\_PRIMARY}.
+\end{itemize}
+
+\section*{\texttt{errorScore} formula in one line}
+\footnotesize
+Score = \texttt{MAX} of:\\
+\quad GPS: \texttt{0.5(velTR + posTR)} (always),\\
+\quad Alt: \texttt{hgtTR} (always),\\
+\quad Air: \texttt{0.3 tasTR} (gated $\geq 2$ sensors + \texttt{EKF\_AFFINITY\_ARSP}),\\
+\quad Mag: \texttt{0.3(magTR.x+y+z)} (gated \texttt{EKF\_AFFINITY\_MAG}).\\
+Score $> \sim 1$ $\Rightarrow$ lane unhealthy. Periodic 10 s debounce; \texttt{checkLaneSwitch} bypasses it.
+
+\section*{Cite anchors --- M8 (control)}
+\begin{itemize}\footnotesize
+  \item \citerange{libraries/AP\_TECS/AP\_TECS.cpp}{1270}{1350} --- \texttt{update\_pitch\_throttle}.
+  \item \citeline{libraries/AP\_TECS/AP\_TECS.cpp}{99} --- \texttt{TECS\_SPDWEIGHT}.
+  \item \citeline{libraries/AP\_TECS/AP\_TECS.cpp}{107} --- \texttt{TECS\_PTCH\_DAMP}.
+  \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{206}{347} --- \texttt{update\_waypoint}.
+  \item \citerange{libraries/AP\_L1\_Control/AP\_L1\_Control.cpp}{7}{44} --- \texttt{NAVL1\_*} parameters.
+  \item \citerange{libraries/APM\_Control/AP\_RollController.cpp}{185}{227} --- \texttt{get\_servo\_out}.
+  \item \citeline{libraries/APM\_Control/AP\_RollController.cpp}{35} --- \texttt{RLL2SRV\_TCONST}.
+\end{itemize}
+
+\section*{TECS one-line summary}
+\footnotesize
+$STE = h + V^2/(2g)$, $SEB = h - V^2/(2g)$. Throttle vs $STE$; pitch vs blend. Blend weight = \texttt{TECS\_SPDWEIGHT} (default 1.0 = 50/50; 0 = altitude only; 2 = speed only).
+
+\section*{L1 one-line summary}
+\footnotesize
+\texttt{\_L1\_dist = MAX($1/\pi \cdot$ damping $\cdot$ period $\cdot$ groundSpeed, dist\_min)}. Defaults: \texttt{NAVL1\_PERIOD=17 s}, \texttt{NAVL1\_DAMPING=0.75}.
+
+\section*{The four extraction-seam patterns (M10)}
+\begin{enumerate}\footnotesize
+  \item Library + stub HAL --- vendor source, mock the HAL surface they actually call. (L1, TECS, controllers.)
+  \item Library + replace \texttt{AP\_Param} --- vendor source, swap config system. (When your config is JSON-backed.)
+  \item Math/algorithm only + reimplement wiring --- read the algorithm, rewrite in your idioms. (EKF lane switch.)
+  \item Black-box ArduPilot via MAVLink/DDS --- run unmodified, talk over the wire.
+\end{enumerate}
+
+\section*{Capstone allocations (L5)}
+\begin{itemize}\footnotesize
+  \item Eng 1: \texttt{AP\_L1\_Control} extraction. Pattern (a). Smallest entanglement.
+  \item Eng 2: \texttt{AP\_TECS} extraction. Pattern (a) + \texttt{AP\_FixedWing::FlightStage}.
+  \item Eng 3: \texttt{AP\_NavEKF3} lane-switch subset. Pattern (c). $\leq$ 50 lines of real algorithm.
+\end{itemize}
+
+\section*{Lab pass criteria}
+\begin{itemize}\footnotesize
+  \item \textbf{L1}: gdb stops at \texttt{Plane::ahrs\_update}; \texttt{millis()}>0; \texttt{loop\_rate}=50.
+  \item \textbf{L2}: \texttt{MY\_PARAM 42.0} persists across SITL restart.
+  \item \textbf{L3}: \texttt{"EKF3 lane switch"} STATUSTEXT within 30 s of glitch; \param{EV} in dataflash.
+  \item \textbf{L4}: MAVExplorer plots show roll-rate change with \texttt{TCONST}; alt-track change with \texttt{PTCH\_DAMP}. Force-disarm via \texttt{param2=21196}.
+  \item \textbf{L5}: \texttt{ctest} prints \texttt{100\% tests passed}.
+\end{itemize}
+
+\section*{When something is wrong --- triage in order}
+\begin{enumerate}\footnotesize
+  \item Stale binary? \texttt{ls -lt build/sitl/bin/arduplane}; rebuild if old.
+  \item Stale SITL process? \texttt{pgrep arduplane}; kill before relaunching.
+  \item ptrace blocked? \texttt{cat /proc/sys/kernel/yama/ptrace\_scope}; set 0 if locked.
+  \item Lane switch not appearing? \texttt{param show EK3\_IMU\_MASK}; must be 3.
+  \item Apt cascade on Ubuntu pre-release? Stale mirror, almost never the script. Switch to \texttt{archive.ubuntu.com}.
+\end{enumerate}
+
+\adoptionsidebar{
+\textbf{Recurring frame.} Every code walk asks: ``What would this look like extracted into your codebase?'' Six side-bars accumulate across M4--M8: HAL, \texttt{AP\_Param}, \texttt{AP\_Airspeed}, \texttt{AP\_NavEKF3}, control pipeline. The dedicated 2 h M10 plus 2.5 h M11 capstone is where the framework lands.}
+
+\instnote{This cheat sheet is the printed reference engineers carry. Encourage them to annotate it during the labs --- their notes on this sheet are part of the artifact they take home.}
+
+\end{multicols}
+
+\end{document}

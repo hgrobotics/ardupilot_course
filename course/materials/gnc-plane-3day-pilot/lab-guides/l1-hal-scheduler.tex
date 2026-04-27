@@ -1,0 +1,240 @@
+% lab-guides/l1-hal-scheduler.tex
+% Single source for Lab L1 student + instructor PDFs. Version is gated via
+% shared/version-flags.tex (set by the Makefile through -def \instructorversion).
+% Source markdown: course/labs/gnc-plane-3day-pilot-l1-hal-scheduler/{student,instructor}-guide.md.
+\documentclass[a4paper,11pt,twoside]{article}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, margin=2.2cm]{geometry}
+\usepackage{titling}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\setlist[enumerate]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  pdftitle={Lab L1 --- HAL + Scheduler Probe},
+}
+\usepackage{url}
+\usepackage{fancyvrb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+\usepackage{array}
+\usepackage{longtable}
+
+\input{../shared/macros.tex}
+
+\renewcommand{\instnote}[1]{\ifinstructor\begin{tcolorbox}[colback=blue!4!white,colframe=blue!40!black,title=Instructor note,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\insttiming}[1]{\ifinstructor\begin{tcolorbox}[colback=orange!5!white,colframe=orange!50!black,title=Pacing,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\instfaq}[2]{\ifinstructor\begin{tcolorbox}[colback=green!4!white,colframe=green!40!black,title=Anticipated Q: #1,breakable]#2\end{tcolorbox}\fi}
+\renewcommand{\instadvanced}[1]{\ifinstructor\begin{tcolorbox}[colback=violet!5!white,colframe=violet!50!black,title=Advanced material pointer,breakable]#1\end{tcolorbox}\fi}
+
+\title{Lab L1 --- HAL + Scheduler Probe\\
+  \large \ifinstructor Instructor Guide\else Student Guide\fi}
+\author{\copyrightline}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Codebase reference:} branch \texttt{GNC-0.1} of \href{\repourl}{\nolinkurl{hgrobotics/ardupilot_course}}. Every link in this lab guide opens the cited file at the named line on GitHub.
+
+\bigskip
+
+\ifinstructor
+% =============================================================================
+% INSTRUCTOR EDITION
+% =============================================================================
+
+\begin{tcolorbox}[colback=red!5!white,colframe=red!40!black,title=Instructor edition]
+This is the instructor edition. Do \textbf{not} hand this to the engineer --- the student edition is the same source compiled without the instructor flag.
+\end{tcolorbox}
+
+\section*{Lab summary for the instructor}
+
+\textbf{Learning objective:} The engineer can attach gdb to a live ArduPilot SITL process, resolve \texttt{Plane::ahrs\_update}, read \texttt{AP\_HAL::millis()} and \texttt{AP::scheduler().get\_loop\_rate\_hz()}, and explain where these values come from in the source tree.
+
+\textbf{Depth:} internals --- this is a code-walk lab, not a flight lab. The plane never arms or takes off.
+
+\textbf{Feed-forward:} The scheduler probe here prepares for M5 (parameter persistence), M7 (EKF lane switch), and M8 (gain modify). Engineers who understand that the scheduler loop is a real, inspectable C++ call graph will reason correctly about timing in later labs.
+
+\section*{Pacing}
+
+At speedup 10 the headless test completes in under 60 s. The student-facing lab at 1$\times$ wall clock should run as follows:
+
+\begin{center}\small
+\begin{tabular}{|p{6cm}|p{4cm}|}\hline
+\textbf{Step} & \textbf{Wall time} \\ \hline
+Build check (already built) & 0--2 min \\ \hline
+SITL launch & $<$ 30 s \\ \hline
+gdb attach + breakpoint & 1--2 min \\ \hline
+Breakpoint fires, two prints & $<$ 1 min \\ \hline
+Detach + stop SITL & $<$ 1 min \\ \hline
+Discussion / note-taking & 5--10 min \\ \hline
+\textbf{Total} & \textbf{$\sim$15 min} \\ \hline
+\end{tabular}
+\end{center}
+
+Budget 30 min including the 5--10 min instructor walk-through of \texttt{ahrs\_update} call graph (M4 hands-on allocation). If you are at minute 25 and still on Step 5, compress the discussion --- the data point (\texttt{millis} > 0, \texttt{rate} = 50) is the essential outcome; the call-graph walk is context.
+
+\section*{Pre-arm setup checklist}
+
+\begin{itemize}[label={[ ]}]
+  \item Confirm \texttt{build/sitl/bin/arduplane} exists and shows a recent modification time.
+  \item Confirm it was built with debug symbols: \texttt{gdb build/sitl/bin/arduplane -ex 'info symbol main' -ex quit} should resolve \texttt{main}.
+  \item Confirm \texttt{gdb} is installed: \texttt{gdb --version}.
+  \item For the student-facing path (interactive \texttt{gdb -p <pid>}), confirm ptrace is allowed: \texttt{cat /proc/sys/kernel/yama/ptrace\_scope} should be \texttt{0}. If \texttt{1} or higher, run \texttt{echo 0 | sudo tee /proc/sys/kernel/yama/ptrace\_scope}. (The headless harness path does not need this --- it launches arduplane as a gdb child.)
+  \item Projector / shared screen should show the source file \codepath{ArduPlane/Plane.cpp} around line 167 (\texttt{void Plane::ahrs\_update()} body starts at line 167; declaration header is at 165). See \citerange{ArduPlane/Plane.cpp}{165}{200}.
+  \item Confirm the repo is on branch \texttt{GNC-0.1}: \texttt{git rev-parse --abbrev-ref HEAD}.
+\end{itemize}
+
+\section*{Common failures and what to say}
+
+\begin{center}\footnotesize
+\begin{tabular}{|p{4.5cm}|p{4.0cm}|p{6.0cm}|}\hline
+\textbf{Symptom / exit code} & \textbf{Diagnostic} & \textbf{What to say} \\ \hline
+\texttt{no symbol "Plane::ahrs\_update" in current context} (exit code 2) & \texttt{file build/sitl/bin/arduplane}; \texttt{info symbol main} in gdb & ``The binary has no debug symbols. Re-run \texttt{./waf configure --board sitl --debug \&\& ./waf plane} --- you need \texttt{--debug} in the configure step, not just the build.'' \\ \hline
+gdb attaches but prompt says \texttt{[New Thread ...]} then hangs (exit code 3) & \texttt{info threads} & ``gdb is attached, SITL is paused. Type \texttt{c} to resume.'' \\ \hline
+\texttt{ptrace: Operation not permitted} & \texttt{cat /proc/sys/kernel/yama/ptrace\_scope} & ``Run \texttt{echo 0 | sudo tee /proc/sys/kernel/yama/ptrace\_scope}. One-time OS-level setting.'' \\ \hline
+\texttt{millis() = 0} (exit code 4) & \texttt{info frame} & ``The breakpoint fired before the HAL clock started (very early in boot). Let it fire once more with \texttt{c}, then re-print.'' \\ \hline
+\texttt{loop\_rate = 400} (exit code 5) & none & ``The binary is a Copter binary, not a Plane binary. Check \texttt{file build/sitl/bin/arduplane} --- should say \texttt{arduplane}. Re-run \texttt{./waf plane}.'' \\ \hline
+SITL exits immediately (exit code 1) & \texttt{cat course/labs/gnc-plane-3day-pilot-l1-hal-scheduler/sitl.log} & ``Look for \texttt{already running} or a permission error. \texttt{pkill arduplane}.'' \\ \hline
+\end{tabular}
+\end{center}
+
+\section*{Verdict signatures}
+
+The headless harness checks (per the L1 test report at \codepath{course/labs/gnc-plane-3day-pilot-l1-hal-scheduler/runs/}):
+
+\begin{enumerate}
+  \item gdb output contains \texttt{Breakpoint 1 at} (symbol resolved).
+  \item gdb output contains \texttt{Breakpoint 1,} (hit).
+  \item First \texttt{\$N = <integer>} where integer > 0 (millis).
+  \item Second \texttt{\$N = <integer>} where integer in [48, 52] (loop rate).
+\end{enumerate}
+
+An engineer who reports ``gdb says 50'' has passed the lab.
+
+\insttiming{L1 reached PASS in iter 2. The headless harness completes in under 60 s on a typical laptop. Per the lab test report, no flaky verdict signatures. Plan 30 min interactive for discussion + the call-graph walk.}
+
+\section*{Pointers to advanced material}
+
+\instadvanced{When an engineer asks ``why 50 Hz for plane but 400 Hz for copter?'': the downstream GNC course (\siblingplane) derives the attitude-control bandwidth from the loop rate on Day 2. For now: copter needs fast rate correction; plane is stable enough at 50 Hz. Point at \citerange{libraries/AP\_Scheduler/AP\_Scheduler.cpp}{43}{49} for the conditional define.}
+
+\instadvanced{When an engineer asks ``can I change the loop rate at runtime?'': yes, via \texttt{SCHED\_LOOP\_RATE} parameter at \citerange{libraries/AP\_Scheduler/AP\_Scheduler.cpp}{55}{69}. Valid range 50--400 Hz, reboot required. Comes up in M8 when they modify controller gains and want higher-resolution log data.}
+
+\else
+% =============================================================================
+% STUDENT EDITION
+% =============================================================================
+
+\section*{What you will do}
+
+In this lab you will attach the GNU debugger to a running ArduPlane SITL process and read two live values straight out of the flight-control loop: the HAL monotonic clock (\texttt{AP\_HAL::millis()}) and the active scheduler loop rate (\texttt{AP::scheduler().get\_loop\_rate\_hz()}).
+
+This is not a flying lab --- the plane does not take off. The goal is to confirm that the Hardware Abstraction Layer (HAL) is a real, callable interface, not just documentation, and that the scheduler truly runs at 50 Hz for a fixed-wing vehicle. After this lab you will have a mental model of how ArduPilot maps ``main loop tick'' to the HAL clock --- a skill you will build on in every subsequent lab.
+
+\section*{Before you start}
+
+\begin{itemize}
+  \item You must have completed the build step from Module M3: \texttt{./waf configure --board sitl --debug \&\& ./waf plane}. Confirm \codepath{build/sitl/bin/arduplane} exists and was built recently.
+  \item \texttt{gdb} must be installed. Verify: \texttt{gdb --version}.
+  \item Open two terminal windows side by side, both \texttt{cd}'d to the repository root.
+  \item No MAVProxy, GCS, or display server needed for this lab.
+\end{itemize}
+
+\section*{The steps}
+
+\subsection*{Step 1 --- Build the debug binary (if not already built)}
+\begin{Verbatim}[frame=single,fontsize=\small]
+./waf configure --board sitl --debug
+./waf plane
+\end{Verbatim}
+
+\subsection*{Step 2 --- Start SITL without MAVProxy}
+In Terminal A:
+\begin{Verbatim}[frame=single,fontsize=\small]
+Tools/autotest/sim_vehicle.py -v ArduPlane -f plane --debug --no-mavproxy
+\end{Verbatim}
+Leave this terminal running.
+
+\subsection*{Step 3 --- Find the process ID}
+In Terminal B:
+\begin{Verbatim}[frame=single,fontsize=\small]
+pgrep arduplane
+\end{Verbatim}
+Note the number printed (e.g. \texttt{12345}).
+
+\subsection*{Step 4 --- Attach gdb}
+In Terminal B:
+\begin{Verbatim}[frame=single,fontsize=\small]
+gdb build/sitl/bin/arduplane -p $(pgrep arduplane)
+\end{Verbatim}
+
+\subsection*{Step 5 --- Set a breakpoint on the HAL update function}
+\begin{Verbatim}[frame=single,fontsize=\small]
+(gdb) b Plane::ahrs_update
+\end{Verbatim}
+Expect: \texttt{Breakpoint 1 at 0x...: file ArduPlane/Plane.cpp, line 167.}
+
+\subsection*{Step 6 --- Continue until the breakpoint fires}
+\begin{Verbatim}[frame=single,fontsize=\small]
+(gdb) c
+\end{Verbatim}
+Within a second or two (function runs at 50 Hz), gdb prints \texttt{Breakpoint 1, Plane::ahrs\_update}.
+
+\subsection*{Step 7 --- Read the HAL clock}
+\begin{Verbatim}[frame=single,fontsize=\small]
+(gdb) print AP_HAL::millis()
+\end{Verbatim}
+Expect a positive integer (\texttt{\$1 = 3471} or similar).
+
+\subsection*{Step 8 --- Read the scheduler loop rate}
+\begin{Verbatim}[frame=single,fontsize=\small]
+(gdb) print AP::scheduler().get_loop_rate_hz()
+\end{Verbatim}
+Expect \texttt{\$2 = 50}. This is the plane default at \citeline{libraries/AP\_Scheduler/AP\_Scheduler.cpp}{46}.
+
+\subsection*{Step 9 --- Detach and quit}
+\begin{Verbatim}[frame=single,fontsize=\small]
+(gdb) detach
+(gdb) quit
+\end{Verbatim}
+
+\subsection*{Step 10 --- Stop SITL}
+Switch to Terminal A and press \texttt{Ctrl-C}.
+
+\section*{What success looks like}
+\begin{itemize}
+  \item gdb resolves the breakpoint at \codepath{ArduPlane/Plane.cpp} (line $\sim$167).
+  \item After \texttt{c}, gdb stops and prints \texttt{Breakpoint 1, Plane::ahrs\_update}.
+  \item \texttt{print AP\_HAL::millis()} prints a positive integer.
+  \item \texttt{print AP::scheduler().get\_loop\_rate\_hz()} prints \texttt{50}.
+\end{itemize}
+
+If you see \texttt{no symbol "Plane::ahrs\_update" in current context}, the binary was not built with debug symbols. Go back to Step 1 and make sure you used \texttt{--debug} in the configure step.
+
+If \texttt{print AP\_HAL::millis()} prints \texttt{0}, gdb evaluated the function in a context where the HAL is not yet live. Let the breakpoint fire once more with another \texttt{c}, then try again.
+
+\section*{Common mistakes and quick fixes}
+
+\begin{enumerate}
+  \item \textbf{``no symbol Plane::ahrs\_update''} --- you forgot \texttt{--debug} in \texttt{./waf configure}. Re-run \texttt{./waf configure --board sitl --debug \&\& ./waf plane} and restart.
+  \item \textbf{gdb attaches but immediately shows a stopped state (SIGSTOP)} --- normal; SITL is paused while gdb attaches. Type \texttt{c} to resume.
+  \item \textbf{pgrep prints nothing} --- SITL is not running. Switch to Terminal A and check it started. If \texttt{sim\_vehicle.py} is still building, wait for the \texttt{Starting} message before running pgrep.
+  \item \textbf{gdb says ``ptrace: Operation not permitted''} --- run \texttt{echo 0 | sudo tee /proc/sys/kernel/yama/ptrace\_scope}, then retry the gdb attach.
+  \item \textbf{Breakpoint fires too fast and gdb floods the screen} --- type \texttt{(gdb) c 1} to single-step through one invocation, take your readings, then detach.
+\end{enumerate}
+
+\section*{Where to go next}
+
+Lab L2 (Module M5 --- \texttt{AP\_GROUPINFO} add + observe). You will add a new parameter to \codepath{ArduPlane/Parameters.\{h,cpp\}}, rebuild, and watch it persist across SITL restarts. The same debug build you just confirmed is the starting point for L2.
+
+\fi
+
+\end{document}

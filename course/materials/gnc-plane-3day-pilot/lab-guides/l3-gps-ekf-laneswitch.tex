@@ -1,0 +1,240 @@
+% lab-guides/l3-gps-ekf-laneswitch.tex
+% Single source for Lab L3 student + instructor PDFs.
+\documentclass[a4paper,11pt,twoside]{article}
+
+\input{../shared/version-flags.tex}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper, margin=2.2cm]{geometry}
+\usepackage{titling}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\setlist[enumerate]{itemsep=2pt, topsep=4pt, leftmargin=*}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=blue!60!black,
+  pdftitle={Lab L3 --- GPS Noise + EKF Lane Switch},
+}
+\usepackage{url}
+\usepackage{fancyvrb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+\usepackage{array}
+\usepackage{longtable}
+
+\input{../shared/macros.tex}
+
+\renewcommand{\instnote}[1]{\ifinstructor\begin{tcolorbox}[colback=blue!4!white,colframe=blue!40!black,title=Instructor note,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\insttiming}[1]{\ifinstructor\begin{tcolorbox}[colback=orange!5!white,colframe=orange!50!black,title=Pacing,breakable]#1\end{tcolorbox}\fi}
+\renewcommand{\instfaq}[2]{\ifinstructor\begin{tcolorbox}[colback=green!4!white,colframe=green!40!black,title=Anticipated Q: #1,breakable]#2\end{tcolorbox}\fi}
+\renewcommand{\instadvanced}[1]{\ifinstructor\begin{tcolorbox}[colback=violet!5!white,colframe=violet!50!black,title=Advanced material pointer,breakable]#1\end{tcolorbox}\fi}
+
+\title{Lab L3 --- GPS Noise + EKF Lane Switch\\
+  \large \ifinstructor Instructor Guide\else Student Guide\fi}
+\author{\copyrightline}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Codebase reference:} branch \texttt{GNC-0.1} of \href{\repourl}{\nolinkurl{hgrobotics/ardupilot_course}}. Every link in this lab guide opens the cited file at the named line on GitHub.
+
+\bigskip
+
+\ifinstructor
+% =============================================================================
+% INSTRUCTOR EDITION
+% =============================================================================
+
+\begin{tcolorbox}[colback=red!5!white,colframe=red!40!black,title=Instructor edition]
+This is the instructor edition. Do \textbf{not} hand this to the engineer --- the student edition is the same source compiled without the instructor flag.
+\end{tcolorbox}
+
+\section*{Lab summary for the instructor}
+
+\textbf{Learning objective:} The engineer can inject a GPS glitch via SITL parameters, observe the EKF3 lane-switch STATUSTEXT, and locate the corresponding log event in the dataflash. Secondary: trace the switch from the observed STATUSTEXT back to \texttt{NavEKF3::switchLane} (\citeline{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1076}) and \texttt{NavEKF3\_core::errorScore} (\citerange{libraries/AP\_NavEKF3/AP\_NavEKF3\_Outputs.cpp}{62}{86}).
+
+\textbf{Depth:} internals --- the engineer should describe, at the level of function names and line numbers, why lane 1 was chosen over lane 0.
+
+\textbf{Feed-forward:} The EKF lane-switch arbitration is the primary feed-forward from M7 to the capstone (L5 Eng 3). An engineer who sees the switch live here will reason correctly about \texttt{errorScore()} in the capstone extraction.
+
+\section*{Pacing}
+
+At speedup 10 the headless test completes in under 90 s wall clock.
+
+\begin{center}\small
+\begin{tabular}{|p{6cm}|p{4cm}|}\hline
+\textbf{Step} & \textbf{Wall time} \\ \hline
+SITL launch + param load & 2 min \\ \hline
+Takeoff + FBWA cruise & 3--5 min \\ \hline
+GPS glitch injection + lane-switch wait & 1--2 min \\ \hline
+Restore + RTL + land & 3--5 min \\ \hline
+Log download + \texttt{mavlogdump} & 2 min \\ \hline
+Discussion: \texttt{errorScore()} walk & 10 min \\ \hline
+\textbf{Total} & \textbf{$\sim$25 min} \\ \hline
+\end{tabular}
+\end{center}
+
+Budget 40 min per the plan. If at minute 30 still waiting for the lane switch, increase the glitch: \texttt{param set SIM\_GPS1\_GLTCH\_X 100}.
+
+\section*{Pre-arm setup checklist}
+
+\begin{itemize}[label={[ ]}]
+  \item Stock debug build at \codepath{build/sitl/bin/arduplane} (no \texttt{MY\_PARAM} patch from L2 --- \texttt{git status} clean).
+  \item \texttt{pymavlink} installed.
+  \item Projector shows \citerange{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1064}{1078} (the \texttt{switchLane} function) so engineers see the \texttt{GCS\_SEND\_TEXT} call directly.
+  \item \texttt{mavlogdump.py} on PATH or engineers know the full path \codepath{Tools/autotest/mavlogdump.py}.
+  \item Confirm \texttt{EK3\_IMU\_MASK} defaults to 3: \texttt{grep HAL\_EKF\_IMU\_MASK\_DEFAULT libraries/AP\_NavEKF3/AP\_NavEKF3.cpp | head -2} should show \texttt{\#define HAL\_EKF\_IMU\_MASK\_DEFAULT 3}.
+\end{itemize}
+
+\section*{Common failures and what to say}
+
+\begin{center}\footnotesize
+\begin{tabular}{|p{4.5cm}|p{4.0cm}|p{6.0cm}|}\hline
+\textbf{Symptom / exit code} & \textbf{Diagnostic} & \textbf{What to say} \\ \hline
+\texttt{EKF3 lane switch} never appears (exit code 3) & \texttt{param show EK3\_IMU\_MASK} & ``If IMU\_MASK is 1, only one EKF lane is running. Set to 3 and restart.'' \\ \hline
+\texttt{SIM\_GPS1\_GLTCH\_X} not accepted & \texttt{param show SIM\_GPS1\_GLTCH\_X} & ``Param name changed between firmware versions. Confirm binary date matches repo. If param not found, SITL binary is stale --- rebuild.'' \\ \hline
+No \texttt{EV} in log (exit code 4) & \texttt{param show LOG\_BITMASK} & ``LOG\_BITMASK must be 65535. Stock plane.parm sets it; if engineer reset params they may have cleared it.'' \\ \hline
+Plane enters failsafe immediately (exit code 5) & STATUSTEXT stream & ``50 m glitch is aggressive --- try 30 m first. If still failing, \texttt{EK3\_ERR\_THRESH} may be tight in this build.'' \\ \hline
+No dataflash log file & \texttt{ls logs/} in SITL workdir & ``SITL writes \texttt{logs/} relative to its working directory. Navigate to the correct dir before \texttt{mavlogdump}.'' \\ \hline
+\end{tabular}
+\end{center}
+
+\section*{Verdict signatures}
+
+The headless harness checks (per the L3 test report at \codepath{course/labs/gnc-plane-3day-pilot-l3-gps-ekf-laneswitch/runs/}):
+
+\begin{enumerate}
+  \item \texttt{EK3\_IMU\_MASK} param is 3.
+  \item STATUSTEXT matching \texttt{EKF3 lane switch \textbackslash d+} received within 30 s sim.
+  \item Dataflash \texttt{EV} message exists in \codepath{logs/*.BIN}.
+  \item No \texttt{failsafe} STATUSTEXT within 12 s sim after restore.
+\end{enumerate}
+
+\insttiming{L3 reached PASS in iter 1. Headless harness completes in under 90 s sim. No flaky verdict signatures observed in the test report.}
+
+\section*{Pointers to advanced material}
+
+\instadvanced{When an engineer asks ``how does \texttt{errorScore} decide to switch?'': M7 derives the complete formula. Score is a weighted MAX of \texttt{velTestRatio}, \texttt{posTestRatio}, \texttt{hgtTestRatio}, with airspeed and magnetometer gates controlled by \texttt{EKF\_AFFINITY\_ARSP} and \texttt{EKF\_AFFINITY\_MAG}. The lane switch fires when the backup's score is consistently lower than the primary's by \texttt{EK3\_ERR\_THRESH} (default 0.2, line 638 of \codepath{AP\_NavEKF3.cpp}). Reference Eng 3's capstone for the in-depth treatment.}
+
+\else
+% =============================================================================
+% STUDENT EDITION
+% =============================================================================
+
+\section*{What you will do}
+
+In this lab you will fly a simulated ArduPlane in \flmode{FBWA} mode and deliberately break its GPS sensor while it is airborne. You will watch the EKF3 sensor-fusion engine detect the bad data and switch to its backup estimation lane.
+
+The key output is a GCS STATUSTEXT line reading \texttt{EKF3 lane switch 1} --- a message emitted by \texttt{NavEKF3::switchLane} at \citeline{libraries/AP\_NavEKF3/AP\_NavEKF3.cpp}{1076}. After the lane switch you will restore the GPS, land, download the dataflash log, and confirm the event is recorded.
+
+This lab makes the EKF lane-health arbitration described in Module M7 tangible: you can see \texttt{errorScore()} acting on real (simulated) sensor data rather than reading about it in isolation.
+
+\section*{Before you start}
+
+\begin{itemize}
+  \item Stock debug build: \texttt{./waf configure --board sitl --debug \&\& ./waf plane}.
+  \item \texttt{pymavlink} installed: \texttt{pip3 install pymavlink}.
+  \item Two terminals in the repository root.
+  \item Lab L2 complete and source tree clean (no MY\_PARAM patch). If unsure: \texttt{git checkout ArduPlane/Parameters.h ArduPlane/Parameters.cpp}.
+\end{itemize}
+
+\section*{The steps}
+
+\subsection*{Step 1 --- Start SITL at KSFO with the lab params}
+In Terminal A:
+\begin{Verbatim}[frame=single,fontsize=\small]
+Tools/autotest/sim_vehicle.py -v ArduPlane -f plane --console --map -L KSFO --no-rebuild
+\end{Verbatim}
+Wait for \texttt{APM: EKF3 IMU0 origin set} in the console (or until the map shows a blue plane icon at San Francisco).
+
+In MAVProxy:
+\begin{Verbatim}[frame=single,fontsize=\small]
+param load course/labs/gnc-plane-3day-pilot-l3-gps-ekf-laneswitch/params.parm
+\end{Verbatim}
+
+\subsection*{Step 2 --- Confirm dual EKF lanes}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param show EK3_IMU_MASK
+\end{Verbatim}
+Expected: \texttt{EK3\_IMU\_MASK 3.000000}.
+
+\subsection*{Step 3 --- Take off and cruise}
+\begin{Verbatim}[frame=single,fontsize=\small]
+mode TAKEOFF
+arm throttle
+\end{Verbatim}
+When altitude $> 50$ m:
+\begin{Verbatim}[frame=single,fontsize=\small]
+mode FBWA
+\end{Verbatim}
+Fly steady $\sim$10 s.
+
+\subsection*{Step 4 --- Inject GPS noise}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set SIM_GPS1_NOISE 5
+\end{Verbatim}
+The plane keeps flying. The EKF sees noisier GPS measurements.
+
+\subsection*{Step 5 --- Inject a GPS glitch}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set SIM_GPS1_GLTCH_X 50
+\end{Verbatim}
+Within 30 s, the console should print:
+\begin{Verbatim}[frame=single,fontsize=\small]
+EKF3 lane switch 1
+\end{Verbatim}
+The EKF detected the bad lane and switched. Message comes from \texttt{NavEKF3::switchLane} after \texttt{checkLaneSwitch} computes that the backup lane's score is lower than the primary.
+
+\subsection*{Step 6 --- Restore the GPS}
+\begin{Verbatim}[frame=single,fontsize=\small]
+param set SIM_GPS1_GLTCH_X 0
+param set SIM_GPS1_NOISE 0
+\end{Verbatim}
+Plane should continue normally. If you see \texttt{failsafe} in the console, raise your hand.
+
+\subsection*{Step 7 --- Return to land}
+\begin{Verbatim}[frame=single,fontsize=\small]
+mode RTL
+\end{Verbatim}
+Wait for the plane to return.
+
+\subsection*{Step 8 --- Download and inspect the log}
+\begin{Verbatim}[frame=single,fontsize=\small]
+disarm
+\end{Verbatim}
+In Terminal B:
+\begin{Verbatim}[frame=single,fontsize=\small]
+python3 Tools/autotest/mavlogdump.py --types=EV logs/00000001.BIN
+\end{Verbatim}
+Look for an \texttt{EV} record around the time of the lane switch.
+
+\section*{What success looks like}
+\begin{itemize}
+  \item Console shows \texttt{EKF3 lane switch 1} (or another digit) within 30 s of the glitch.
+  \item \texttt{mavlogdump.py --types=EV} prints at least one line.
+  \item Plane does not enter failsafe after GPS is restored.
+\end{itemize}
+
+If \texttt{EKF3 lane switch} never appears, the glitch may not exceed the EKF lane-switch threshold, or \texttt{EK3\_IMU\_MASK} is not 3. Try \texttt{param set SIM\_GPS1\_GLTCH\_X 100}.
+
+\section*{Common mistakes and quick fixes}
+
+\begin{enumerate}
+  \item \textbf{\texttt{EKF3 lane switch} never appears} --- check \texttt{EK3\_IMU\_MASK} is 3. If 1, only one lane runs and there is nothing to switch to.
+  \item \textbf{\texttt{SIM\_GPS1\_GLTCH\_X} parameter not found} --- binary built before GPS subgroup prefix rename. Confirm SITL binary matches repo: \texttt{./waf plane --no-configure}.
+  \item \textbf{Plane enters failsafe immediately after \texttt{SIM\_GPS1\_GLTCH\_X 50}} --- glitch too large. Switch to \flmode{RTL}, restore, retry with smaller glitch (e.g. 30).
+  \item \textbf{No EV records in log} --- \texttt{LOG\_BITMASK} may not be 65535. \texttt{param show LOG\_BITMASK}; set if needed.
+  \item \textbf{\texttt{mavlogdump.py} says ``file not found''} --- log number may differ. \texttt{ls logs/*.BIN} to find the actual filename.
+\end{enumerate}
+
+\section*{Where to go next}
+
+Lab L4 (Module M8 --- roll controller and TECS gain modify) uses the same SITL setup but modifies controller gains live. No source code changes required.
+
+\fi
+
+\end{document}

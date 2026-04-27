@@ -1,0 +1,2 @@
+# Restore Phase B: reset TECS pitch damping to source default
+TECS_PTCH_DAMP 0.3
