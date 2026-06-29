@@ -174,3 +174,7 @@ env.bak/
 venv.bak/
 autotest_result_*_junit.xml
 .python-version
+
+# Local LLM tool artifacts (generated, not source)
+graphify-out/
+.understand-anything/
