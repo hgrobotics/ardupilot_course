@@ -195,11 +195,20 @@ void Scheduler::set_system_initialized() {
     exceptions |= FE_INVALID;
 #endif
 #if !defined(HAL_BUILD_AP_PERIPH)
+#ifdef __APPLE__
+    // On macOS (Apple clang 21+ / darwin 25+) feenableexcept() is honored on
+    // arm64 where older toolchains silently ignored it, so the multicopter
+    // mixer's benign Inf/NaN divides trap as SIGILL at boot. Real ArduPilot
+    // firmware never traps FP, so never trap on Apple regardless of the
+    // SIM_FLOAT_EXCEPT param.
+    feclearexcept(exceptions);
+#else
     if (_sitlState->_sitl == nullptr || _sitlState->_sitl->float_exception) {
         feenableexcept(exceptions);
     } else {
         feclearexcept(exceptions);
     }
+#endif
 #else
     feclearexcept(exceptions);
 #endif

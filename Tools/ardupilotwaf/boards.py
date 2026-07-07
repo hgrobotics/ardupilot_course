@@ -669,6 +669,14 @@ class sitl(Board):
 
         env.LINKFLAGS += ['-pthread',]
 
+        # Apple's new linker (ld-prime, Xcode 15+) makes the unaligned pointers
+        # in the PACKED AP_FWVersion struct a fatal error; the classic linker
+        # (ld64) only warns. Use it for the macOS SITL host build so linking
+        # succeeds. PACKED must stay so firmware_version_decoder.py can read the
+        # version struct out of firmware binaries byte-for-byte.
+        if Utils.unversioned_sys_platform() == 'darwin':
+            env.LINKFLAGS += ['-Wl,-ld_classic']
+
         if cfg.env.DEBUG and 'clang++' in cfg.env.COMPILER_CXX and cfg.options.asan:
              env.LINKFLAGS += ['-fsanitize=address']
 
