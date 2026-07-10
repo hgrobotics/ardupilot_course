@@ -197,11 +197,22 @@ void Scheduler::set_system_initialized() {
     exceptions |= FE_INVALID;
 #endif
 #if !defined(HAL_BUILD_AP_PERIPH)
+#ifdef __APPLE__
+    // macOS has no feenableexcept(), so AP_Common/missing/fenv.h polyfills it;
+    // on arm64 that polyfill arms the FPCR trap-enable bits directly. We are not
+    // built with FENV_ACCESS, so the compiler hoists FP divides above their
+    // guards -- calc_speed_scaler() evaluates SCALING_SPEED/aspeed with aspeed
+    // still 0 and discards the result -- and the trap turns that benign divide
+    // into a SIGILL. Real ArduPilot firmware never traps FP, so never trap on
+    // Apple regardless of the SIM_FLOAT_EXCEPT param.
+    feclearexcept(exceptions);
+#else
     if (_sitlState->_sitl == nullptr || _sitlState->_sitl->float_exception) {
         feenableexcept(exceptions);
     } else {
         feclearexcept(exceptions);
     }
+#endif
 #else
     feclearexcept(exceptions);
 #endif
