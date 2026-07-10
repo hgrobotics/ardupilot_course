@@ -1,0 +1,22 @@
+# Extra SITL defaults, layered on top of the frame's stock parameter file.
+# Loaded by ./sitl.sh through the SITL --defaults flag (comma-separated list).
+#
+# Every name here must exist in this firmware: SITL calls AP_HAL::panic() if a
+# defaults file contains an unknown parameter (AP_Param.cpp, load_defaults_file
+# _from_filesystem), so a stale name is a hard boot failure, not a warning.
+
+# Terrain off. SITL's terrain subsystem does blocking tile I/O from inside the
+# lockstep physics loop, which stalls the sim at high --speedup. QGroundControl
+# serves terrain over MAVLink anyway; turn these back on only for a mission
+# that actually needs AGL waypoints.
+TERRAIN_ENABLE 0
+TERRAIN_FOLLOW 0
+
+# Log from boot rather than from arming, so a session that never arms still
+# leaves a .bin behind under sitl-run/logs/.
+LOG_DISARMED 1
+
+# Deliberately NOT set: SIM_FLOAT_EXCEPT.
+# On macOS this build never arms the FPU trap-enable bits at all -- see the
+# __APPLE__ branch of AP_HAL_SITL/Scheduler.cpp -- so the param has no effect
+# here. On Linux its default of 1 catches real FP bugs and is worth keeping.
