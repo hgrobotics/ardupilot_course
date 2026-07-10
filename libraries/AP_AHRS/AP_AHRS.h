@@ -212,22 +212,9 @@ public:
     // return the quaternion defining the rotation from NED to XYZ (body) axes
     bool get_quaternion(Quaternion &quat) const WARN_IF_UNUSED;
 
-    // return secondary attitude solution if available, as eulers in radians
-    bool get_secondary_attitude(Vector3f &eulers) const {
-        eulers = state.secondary_attitude;
-        return state.secondary_attitude_ok;
-    }
-
-    // return secondary attitude solution if available, as quaternion
-    bool get_secondary_quaternion(Quaternion &quat) const {
-        quat = state.secondary_quat;
-        return state.secondary_quat_ok;
-    }
-
-    // return secondary position solution if available
-    bool get_secondary_position(Location &loc) const {
-        loc = state.secondary_pos;
-        return state.secondary_pos_ok;
+    // return secondary estimates; note that this may return nullptr!
+    const AP_AHRS_Backend::Estimates *get_secondary_estimates() const {
+        return secondary_estimates;
     }
 
     // EKF has a better ground speed vector estimate
@@ -279,22 +266,36 @@ public:
     // order. Must only be called if have_inertial_nav() is true
     bool get_velocity_NED(Vector3f &vec) const WARN_IF_UNUSED;
 
-    // return the relative position NED from either home or origin
+    // return the relative position NED from home
     // return true if the estimate is valid
     bool get_relative_position_NED_home(Vector3f &vec) const WARN_IF_UNUSED;
-    bool get_relative_position_NED_origin(Vector3p &vec) const WARN_IF_UNUSED;
+    bool get_relative_position_NE_home(Vector2f &posNE) const WARN_IF_UNUSED;
+    void get_relative_position_D_home(float &posD) const;
+
+    // return the relative position NED from origin
+    // return true if the estimate is valid
+    bool get_relative_position_NED_origin(Vector3p &vec) const WARN_IF_UNUSED {
+        vec.xy() = active_estimates->position_NE;
+        vec.z = active_estimates->position_D;
+        return (active_estimates->position_NE_valid && active_estimates->position_D_valid);
+    }
     bool get_relative_position_NED_origin_float(Vector3f &vec) const WARN_IF_UNUSED;
 
     // return the relative position NE from home or origin
     // return true if the estimate is valid
-    bool get_relative_position_NE_home(Vector2f &posNE) const WARN_IF_UNUSED;
-    bool get_relative_position_NE_origin(Vector2p &posNE) const WARN_IF_UNUSED;
+    bool get_relative_position_NE_origin(Vector2p &posNE) const WARN_IF_UNUSED {
+        posNE = active_estimates->position_NE;
+        return active_estimates->position_NE_valid;
+    }
     bool get_relative_position_NE_origin_float(Vector2f &posNE) const WARN_IF_UNUSED;
 
     // return the relative position down from home or origin
     // baro will be used for the _home relative one if the EKF isn't
-    void get_relative_position_D_home(float &posD) const;
-    bool get_relative_position_D_origin(postype_t &posD) const WARN_IF_UNUSED;
+    bool get_relative_position_D_origin(postype_t &posD) const WARN_IF_UNUSED {
+        posD = active_estimates->position_D;
+        return active_estimates->position_D_valid;
+    }
+
     bool get_relative_position_D_origin_float(float &posD) const WARN_IF_UNUSED;
 
     // return location corresponding to vector relative to the
@@ -391,6 +392,11 @@ public:
         return active_backend->getLastPosDownReset(posDelta);
     }
 
+    // returns a counter which is incremented each time the estimator's output resets
+    uint16_t get_last_attitude_reset_count() const {
+        return state.attitude_reset_count;
+    }
+
     // Resets the baro so that it reads zero at the current height
     // Resets the EKF height to zero
     // Adjusts the EKf origin height so that the EKF height + origin height is the same as before
@@ -461,9 +467,6 @@ public:
     // to use, i.e, the one being used by the primary lane. A lane switch could have happened due to an 
     // airspeed sensor fault, which makes this even more necessary
     uint8_t get_active_airspeed_index() const;
-
-    // return the index of the primary core or -1 if no primary core selected
-    int8_t get_primary_core_index() const { return state.primary_core; }
 
     // get the index of the current primary accelerometer sensor
     uint8_t get_primary_accel_index(void) const { return state.primary_accel; }
@@ -932,17 +935,14 @@ private:
     // if we have an estimate
     bool _airspeed_EAS(float &airspeed_ret, AirspeedEstimateType &status) const;
 
-    // return secondary attitude solution if available, as eulers in radians
-    bool _get_secondary_attitude(Vector3f &eulers) const;
-
-    // return secondary attitude solution if available, as quaternion
-    bool _get_secondary_quaternion(Quaternion &quat) const;
-
     // set state.configured_ekf_type and the pointer to the configured backend
     void update_configured_ekf_type();
 
     // set state.active_EKF_type and the pointer to the active backend
     void update_active_EKF_type();
+
+    // update secondary backend pointers:
+    void update_secondary_backend_pointers();
 
     // get active EKF type
     EKFType _active_EKF_type(void) const;
@@ -957,9 +957,6 @@ private:
     // return estimate of true airspeed vector in body frame in m/s
     // returns false if estimate is unavailable
     bool _airspeed_TAS(Vector3f &vec) const;
-
-    // return secondary position solution if available
-    bool _get_secondary_position(Location &loc) const;
 
     // Retrieves the corrected NED delta velocity in use by the inertial navigation
     bool _getCorrectedDeltaVelocityNED(Vector3f& ret, float& dt) const WARN_IF_UNUSED;
@@ -976,9 +973,6 @@ private:
 
     // get secondary EKF type.  returns false if no secondary (i.e. only using DCM)
     bool _get_secondary_EKF_type(EKFType &secondary_ekf_type) const;
-
-    // return the index of the primary core or -1 if no primary core selected
-    int8_t _get_primary_core_index() const;
 
     // get current location estimate
     bool _get_location(Location &loc) const;
@@ -1007,7 +1001,6 @@ private:
         EKFType configured_ekf_type;  // vetted parameter-configured EKFType
         uint8_t primary_gyro;
         uint8_t primary_accel;
-        uint8_t primary_core;
         Vector3f gyro_estimate;
         Matrix3f dcm_matrix;
         Vector3f gyro_drift;
@@ -1023,14 +1016,9 @@ private:
         bool airspeed_TAS_vec_ok;
         Quaternion quat;
         bool quat_ok;
-        Vector3f secondary_attitude;
-        bool secondary_attitude_ok;
-        Quaternion secondary_quat;
-        bool secondary_quat_ok;
+        uint16_t attitude_reset_count;
         Location location;
         bool location_ok;
-        Location secondary_pos;
-        bool secondary_pos_ok;
         Vector2f ground_speed_vec;
         float ground_speed;
         bool corrected_dv_valid;
@@ -1137,7 +1125,15 @@ private:
     AP_AHRS_Backend *active_backend;
     AP_AHRS_Backend::Estimates *active_estimates;
 
-    const AP_AHRS_Backend::Estimates *get_secondary_estimates() const;
+    uint16_t last_active_estimates_attitude_reset_count;
+
+    // secondary estimates - used for reporting purposes.  If the
+    // primary backend fails this is the backend/result pair likely to
+    // be used by the vehicle.  In the case that the primary *has*
+    // failed this *continues* to be the same estimates.  For now.
+    // Note that these pointers *must* be nullptr-checked before use!
+    // AP_AHRS_Backend *secondary_backend;
+    AP_AHRS_Backend::Estimates *secondary_estimates;
 };
 
 namespace AP {

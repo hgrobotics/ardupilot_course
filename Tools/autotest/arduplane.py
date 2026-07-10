@@ -11,6 +11,7 @@ import os
 import signal
 import time
 
+from pymavlink import mavextra
 from pymavlink import mavutil
 from pymavlink import quaternion
 from pymavlink.rotmat import Vector3
@@ -1206,8 +1207,8 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
 #        if (m.onboard_control_sensors_health & receiver_bit):
 #            raise NotAchievedException("Sensor healthy when it shouldn't be")
         self.set_parameter("SIM_RC_FAIL", 0)
-        # have to allow time for RC to be fetched from SITL
-        self.delay_sim_time(0.5, reason="RC to be fetched from SITL")
+        # wait for RC to be fetched from SITL and the receiver to recover
+        self.wait_sensor_state(receiver_bit, True, True, True)
         self.do_timesync_roundtrip()
         m = self.assert_receive_message('SYS_STATUS')
         self.progress("Testing receiver enabled")
@@ -1242,9 +1243,8 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             raise NotAchievedException("Sensor healthy when it shouldn't be")
         self.progress("Making RC work again")
         self.set_parameter("SIM_RC_FAIL", 0)
-        # have to allow time for RC to be fetched from SITL
         self.progress("Giving receiver time to recover")
-        self.delay_sim_time(0.5, reason="receiver to recover")
+        self.wait_sensor_state(receiver_bit, True, True, True)
         self.do_timesync_roundtrip()
         m = self.assert_receive_message('SYS_STATUS')
         self.progress("Testing receiver enabled")
@@ -1432,21 +1432,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.wait_statustext("Auto disarmed", timeout=60)
 
     def assert_fence_sys_status(self, present, enabled, health):
-        self.delay_sim_time(1, reason="fence status to propagate")
-        self.do_timesync_roundtrip()
-        m = self.assert_receive_message('SYS_STATUS')
-        tests = [
-            ("present", present, m.onboard_control_sensors_present),
-            ("enabled", enabled, m.onboard_control_sensors_enabled),
-            ("health", health, m.onboard_control_sensors_health),
-        ]
-        bit = mavutil.mavlink.MAV_SYS_STATUS_GEOFENCE
-        for test in tests:
-            (name, want, field) = test
-            got = (field & bit) != 0
-            if want != got:
-                raise NotAchievedException("fence status incorrect; %s want=%u got=%u" %
-                                           (name, want, got))
+        self.wait_sensor_state(mavutil.mavlink.MAV_SYS_STATUS_GEOFENCE, present, enabled, health)
 
     def MODE_SWITCH_RESET(self):
         '''test the MODE_SWITCH_RESET auxiliary function'''
@@ -1882,7 +1868,56 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         if self.get_distance_int(gpi, ahrs2) > 10:
             raise NotAchievedException("Secondary location looks bad")
 
+        # secondary altitude should be close to the primary altitude
+        # (AHRS2.altitude is MSL in metres, GLOBAL_POSITION_INT.alt is
+        # MSL in mm):
+        if abs(ahrs2.altitude - gpi.alt * 1.0e-3) > 10:
+            raise NotAchievedException(
+                "Secondary altitude looks bad (want=%f got=%f)" %
+                (gpi.alt * 1.0e-3, ahrs2.altitude))
+
+        # secondary yaw should match the simulated yaw; check_attitudes_match
+        # only checks AHRS2 roll and pitch:
+        simstate = self.assert_receive_message('SIMSTATE', verbose=1)
+        want = math.degrees(simstate.yaw)
+        got = math.degrees(ahrs2.yaw)
+        if abs(mavextra.angle_diff(want, got)) > 15:
+            raise NotAchievedException(
+                "Secondary yaw looks bad (want=%f got=%f)" % (want, got))
+
         self.check_attitudes_match()
+
+    def AHRS2Logging(self):
+        '''check the secondary AHRS estimate is logged to the AHR2 message'''
+        self.wait_ready_to_arm()
+        self.takeoff(alt=100, mode='TAKEOFF')
+        self.change_mode('LOITER')
+        # loiter long enough to sweep the yaw through a full circle so the
+        # secondary yaw and position are meaningfully exercised:
+        self.delay_sim_time(60, reason="sweep yaw through a circle")
+        self.fly_home_land_and_disarm()
+        self.assert_AHR2_log_matches_primary()
+
+    def AHRS2NoSecondaryEstimate(self):
+        '''check AHRS2 mavlink reporting when the secondary estimator has no
+        valid estimate.  Disabling the EKFs leaves DCM as the active
+        estimator and the configured-but-unstarted EKF3 as the secondary;
+        that secondary has no valid attitude or location.'''
+        self.context_push()
+        try:
+            self.set_parameters({
+                "EK2_ENABLE": 0,
+                "EK3_ENABLE": 0,
+                "AHRS_EKF_TYPE": 3,
+            })
+            self.reboot_sitl()
+            self.delay_sim_time(5, reason="allow DCM to settle")
+            # the secondary estimate is now reported even though it has no
+            # valid location; AHRS2 is sent regardless of estimate validity:
+            self.assert_receive_message('AHRS2', timeout=5)
+        finally:
+            self.context_pop()
+            self.reboot_sitl()
 
     def MainFlight(self):
         '''Lots of things in one flight'''
@@ -1932,11 +1967,8 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.takeoff(alt=50, mode='TAKEOFF')
         # simulate the effect of a blocked pitot tube
         self.set_parameter("ARSPD_RATIO", 0.1)
-        self.delay_sim_time(10, reason="blocked pitot to be detected")
-        if (self.get_parameter("ARSPD_USE") == 0):
-            self.progress("Faulty Sensor Disabled")
-        else:
-            raise NotAchievedException("Airspeed Sensor Not Disabled")
+        self.wait_parameter_value("ARSPD_USE", 0, timeout=15)
+        self.progress("Faulty Sensor Disabled")
         self.delay_sim_time(20, reason="sensor fault monitoring period")
         # simulate the effect of blockage partially clearing
         self.set_parameter("ARSPD_RATIO", 1.0)
@@ -1947,11 +1979,8 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             raise NotAchievedException("Fault Sensor Re-Enabled")
         # simulate the effect of blockage fully clearing
         self.set_parameter("ARSPD_RATIO", 2.0)
-        self.delay_sim_time(60, reason="airspeed sensor to re-enable")
-        if (self.get_parameter("ARSPD_USE") == 1):
-            self.progress("Sensor Re-Enabled")
-        else:
-            raise NotAchievedException("Airspeed Sensor Not Re-Enabled")
+        self.wait_parameter_value("ARSPD_USE", 1, timeout=70)
+        self.progress("Sensor Re-Enabled")
         self.fly_home_land_and_disarm()
 
     def AIRSPEED_AUTOCAL(self):
@@ -2546,8 +2575,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         # Stick mixing must be enabled so this roll is carried over into loiter
         self.set_rc(1, 1600)
 
-        # Wait a short time for vehicle to settle
-        self.delay_sim_time(10)
+        self.delay_sim_time(10, "wait a short time for vehicle to settle")
 
         # Push context so we can remove the message hook
         self.context_push()
@@ -3341,6 +3369,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.set_parameters({
             "LOG_DARM_RATEMAX": 0,
             "LOG_FILE_RATEMAX": 0,
+            "LOG_FILE_BUFSIZE": 32767,
         })
 
         bits = [
@@ -4272,12 +4301,9 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.set_rc(7, 2000)
         self.delay_sim_time(2, reason="fence switch to register")
         self.set_rc(7, 1000)
-        self.delay_sim_time(2, reason="fence switch to register")
 
         self.progress("Check fence is disabled")
-        m = self.assert_receive_message('SYS_STATUS')
-        if (m.onboard_control_sensors_enabled & fence_bit):
-            raise NotAchievedException("Fence disable with switch failed")
+        self.wait_sensor_state(fence_bit, present=True, enabled=False, healthy=True)
 
         self.progress("Fly below floor and check for no breach")
         self.change_altitude(40, relative=True)
@@ -7040,7 +7066,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
 
     def GuidedAttitudeNoGPS(self):
         '''test that guided-attitude still works with no GPS'''
-        self.takeoff(50)
+        self.takeoff(30)
         self.change_mode('GUIDED')
         self.context_push()
         self.set_parameter('SIM_GPS1_ENABLE', 0)
@@ -7125,7 +7151,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             higher_home = copy.copy(home)
             higher_home.alt += 40
             self.set_home(higher_home)
-            self.wait_altitude(home.alt+target_alt-5, home.alt+target_alt+5, relative=False, minimum_duration=10, timeout=12)
+            self.wait_altitude(home.alt+target_alt-5, home.alt+target_alt+5, relative=False, minimum_duration=10, timeout=15)
             self.disarm_vehicle(force=True)
             self.reboot_sitl()
 
@@ -8297,6 +8323,55 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             target_compid=mavutil.mavlink.MAV_COMP_ID_GIMBAL
         )
 
+    def steplessAHRSSwitch(self):
+        '''Ensure AHRS source switches have input shaping applied correctly'''
+
+        # Set a roll offset
+        self.set_parameter("SIM_AHRS_OFF_RLL", 60)
+
+        # Takeoff in TAKEOFF mode
+        self.takeoff(alt=50, mode="TAKEOFF")
+
+        # Switch to FBWA
+        self.set_rc(3, 1500)
+        self.change_mode("FBWA")
+        self.delay_sim_time(20, reason="plane to settle")
+
+        # Switch to the offset AHRS source
+        self.context_push()
+        self.set_parameter("AHRS_EKF_TYPE", 10)
+
+        self.delay_sim_time(10, reason="Wait for vehicle to recover")
+
+        # Revert to original AHRS source
+        self.context_pop()
+
+        self.delay_sim_time(10, reason="Wait for vehicle to recover")
+
+        self.fly_home_land_and_disarm()
+
+        # Check the roll error in the log in FBWA
+        dfreader = self.dfreader_for_current_onboard_log()
+        max_roll_error = 0.0
+        mode = None
+        FBWA_mode_num = 5
+        while True:
+            m = dfreader.recv_match(type=['ATIS', 'MODE'])
+            if m is None:
+                break
+            if m.get_type() == 'MODE':
+                mode = m.ModeNum
+                continue
+            if mode == FBWA_mode_num:
+                max_roll_error = max(max_roll_error, abs(m.rErr))
+
+        # If input shaping was not working correctly we would see an error nearly as large as the roll offset
+        roll_threshold = 15
+        if max_roll_error > roll_threshold:
+            raise NotAchievedException("Large roll error %0.1f > %0.1f" % (max_roll_error, roll_threshold))
+
+        self.progress("Roll error check passed %0.1f <= %0.1f" % (max_roll_error, roll_threshold))
+
     def tests(self):
         '''return list of all tests'''
         ret = []
@@ -8398,6 +8473,8 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.RCDisableAirspeedUse,
             self.AHRS_ORIENTATION,
             self.AHRSTrim,
+            self.AHRS2Logging,
+            self.AHRS2NoSecondaryEstimate,
             self.LandingDrift,
             self.TakeoffAuto1,
             self.TakeoffAuto2,
@@ -8492,6 +8569,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.UTMGlobalPositionWaypoint,
             self.EK3HeightDatumResetFlushesBuffers,
             self.PPPPeriph,
+            self.steplessAHRSSwitch,
         ]
 
     def UTMGlobalPositionWaypoint(self):

@@ -198,6 +198,9 @@ class ArmedAtEndOfTestException(ErrorException):
     pass
 
 
+NUM_RC_CHANNELS = 16
+
+
 class Context(object):
     def __init__(self):
         self.parameters = []
@@ -572,11 +575,12 @@ class WaitAndMaintain(object):
 
 
 class WaitAndMaintainLocation(WaitAndMaintain):
-    def __init__(self, test_suite, target, accuracy=5, height_accuracy=1, **kwargs):
+    def __init__(self, test_suite, target, accuracy=5, height_accuracy=1, location_source=None, **kwargs):
         super(WaitAndMaintainLocation, self).__init__(test_suite, **kwargs)
         self.target = target
         self.height_accuracy = height_accuracy
         self.accuracy = accuracy
+        self.location_source = location_source
 
     def announce_start_text(self):
         t = self.target
@@ -590,7 +594,9 @@ class WaitAndMaintainLocation(WaitAndMaintain):
         return self.loc
 
     def get_current_value(self):
-        return self.test_suite.mav.location()
+        if self.location_source is None:
+            return self.test_suite.mav.location()
+        return self.test_suite.get_mav_location(self.location_source)
 
     def horizontal_error(self, value):
         return self.test_suite.get_distance(value, self.target)
@@ -3694,8 +3700,7 @@ class TestSuite(abc.ABC):
             raise NotAchievedException("Expected GPS to be OK")
         self.assert_sensor_state(mavutil.mavlink.MAV_SYS_STATUS_SENSOR_GPS, True, True, True)
         self.set_parameter("SIM_GPS1_TYPE", 0)
-        self.delay_sim_time(10, reason="GPS disable to take effect")
-        self.assert_sensor_state(mavutil.mavlink.MAV_SYS_STATUS_SENSOR_GPS, False, False, False)
+        self.wait_sensor_state(mavutil.mavlink.MAV_SYS_STATUS_SENSOR_GPS, False, False, False, timeout=10)
         m = self.poll_message("HIGH_LATENCY2")
         self.progress(self.dump_message_verbose(m))
         if (m.failure_flags & mavutil.mavlink.HL_FAILURE_FLAG_GPS) == 0:
@@ -3703,7 +3708,7 @@ class TestSuite(abc.ABC):
 
         self.start_subtest("HIGH_LATENCY2 location")
         self.set_parameter("SIM_GPS1_TYPE", 1)
-        self.delay_sim_time(10, reason="GPS to re-enable")
+        self.wait_sensor_state(mavutil.mavlink.MAV_SYS_STATUS_SENSOR_GPS, True, True, True, timeout=10)
         m = self.poll_message("HIGH_LATENCY2")
         self.progress(self.dump_message_verbose(m))
         loc = mavutil.location(m.latitude, m.longitude, m.altitude, 0)
@@ -4842,7 +4847,7 @@ class TestSuite(abc.ABC):
         # if len(pre) != len(post):
         #     raise NotAchievedException("Rotation happened on arming?!")
         # size_a = os.path.getsize(current_log_filepath)
-        # self.delay_sim_time(5)
+        # self.delay_sim_time(5, "rotate to occur")
         # size_b = os.path.getsize(current_log_filepath)
         # if size_b <= size_a:
         #     raise NotAchievedException("Log not growing")
@@ -5819,24 +5824,7 @@ class TestSuite(abc.ABC):
         return path
 
     def rc_defaults(self):
-        return {
-            1: 1500,
-            2: 1500,
-            3: 1500,
-            4: 1500,
-            5: 1500,
-            6: 1500,
-            7: 1500,
-            8: 1500,
-            9: 1500,
-            10: 1500,
-            11: 1500,
-            12: 1500,
-            13: 1500,
-            14: 1500,
-            15: 1500,
-            16: 1500,
-        }
+        return {channel: 1500 for channel in range(1, NUM_RC_CHANNELS+1)}
 
     def set_rc_from_map(self, _map, *, timeout: float | int | None = 20.0, quiet=False):
         """Sets provided RC channel/value pairs.
@@ -5883,40 +5871,37 @@ class TestSuite(abc.ABC):
     def rc_thread_main(self):
         """When this function completes, the thread terminates."""
         sitl_output = mavutil.mavudp("127.0.0.1:%u" % self.sitl_rcin_port(), input=False)
-        num_rc_channels = 16
 
         # Pay attention, there are race conditions /
         # wallclock-vs-simtime issues to worry about here.
         max_wait_before_sending_values = 0.2 / self.speedup
 
-        format_str = "<" + "H" * num_rc_channels
-        rc_values = [1000] * num_rc_channels
+        format_str = "<" + "H" * NUM_RC_CHANNELS
+        rc_values = [1000] * NUM_RC_CHANNELS
         while not self.rc_thread_should_quit:
             try:
                 rc_value_updates = self.rc_queue.get(timeout=max_wait_before_sending_values)
                 for chan, val in rc_value_updates.items():
                     if not isinstance(chan, int):
                         raise ValueError(f"{chan} is not a valid RC channel, must be an int.")
-                    if not (1 <= chan <= num_rc_channels):
-                        raise ValueError(f"{chan} is not a valid RC channel, must be in range [1, {num_rc_channels}].")
+                    if not (1 <= chan <= NUM_RC_CHANNELS):
+                        raise ValueError(f"{chan} is not a valid RC channel, must be in range [1, {NUM_RC_CHANNELS}].")
                     rc_values[chan-1] = val
             except queue.Empty:
                 pass
             sitl_output.write(struct.pack(format_str, *rc_values))
 
     def set_rc_default(self):
-        """Setup all simulated RC control to 1500."""
+        """Set all channels of simulated RC control to the default value (typically 1500)."""
         _defaults = self.rc_defaults()
         self.set_rc_from_map(_defaults)
 
     def check_rc_defaults(self):
         """Ensure all rc outputs are at defaults"""
         self.do_timesync_roundtrip()
-        _defaults = self.rc_defaults()
         m = self.assert_receive_message('RC_CHANNELS', timeout=5)
         need_set = {}
-        for chan in _defaults:
-            default_value = _defaults[chan]
+        for chan, default_value in self.rc_defaults().items():
             current_value = getattr(m, "chan" + str(chan) + "_raw")
             if default_value != current_value:
                 self.progress("chan=%u needs resetting is=%u want=%u" %
@@ -6284,6 +6269,34 @@ class TestSuite(abc.ABC):
 
     def plane_CPUFailsafe(self):
         '''In lockup Plane should copy RC inputs to RC outputs'''
+        def expected_output(channel, rc_value, params):
+            rc_min = params["RC%u_MIN" % channel]
+            rc_max = params["RC%u_MAX" % channel]
+            rc_trim = params["RC%u_TRIM" % channel]
+            servo_min = params["SERVO%u_MIN" % channel]
+            servo_max = params["SERVO%u_MAX" % channel]
+            servo_trim = params["SERVO%u_TRIM" % channel]
+
+            if rc_value < rc_trim:
+                output = servo_trim - (rc_trim - rc_value) * (servo_trim - servo_min) / (rc_trim - rc_min)
+            else:
+                output = servo_trim + (rc_value - rc_trim) * (servo_max - servo_trim) / (rc_max - rc_trim)
+            return int(output)
+
+        channel = 2
+        low_rc = 1200
+        high_rc = 1700
+        params = self.get_parameters([
+            "RC%u_MIN" % channel,
+            "RC%u_MAX" % channel,
+            "RC%u_TRIM" % channel,
+            "SERVO%u_MIN" % channel,
+            "SERVO%u_MAX" % channel,
+            "SERVO%u_TRIM" % channel,
+        ])
+        low_output = expected_output(channel, low_rc, params)
+        high_output = expected_output(channel, high_rc, params)
+
         # customising the SITL commandline ensures the process will
         # get stopped/started at the end of the test
         self.customise_SITL_commandline([])
@@ -6309,12 +6322,12 @@ class TestSuite(abc.ABC):
         self.context_pop()
         # Different scaling for RC input and servo output means the
         # servo output value isn't the rc input value:
-        self.progress("Setting RC to 1200")
-        self.rc_queue.put({2: 1200})
-        self.progress("Waiting for servo of 1260")
-        self.cpufailsafe_wait_servo_channel_value(2, 1260)
-        self.rc_queue.put({2: 1700})
-        self.cpufailsafe_wait_servo_channel_value(2, 1660)
+        self.progress("Setting RC to %u" % low_rc)
+        self.rc_queue.put({channel: low_rc})
+        self.progress("Waiting for servo of %u" % low_output)
+        self.cpufailsafe_wait_servo_channel_value(channel, low_output)
+        self.rc_queue.put({channel: high_rc})
+        self.cpufailsafe_wait_servo_channel_value(channel, high_output)
         self.reset_SITL_commandline()
 
     def mavproxy_arm_vehicle(self, mavproxy):
@@ -6910,6 +6923,9 @@ class TestSuite(abc.ABC):
             return False # re-raise any exception
 
     def sysid_thismav(self):
+        return 1
+
+    def compid_thismav(self):
         return 1
 
     def create_MISSION_ITEM_INT(
@@ -7588,14 +7604,11 @@ class TestSuite(abc.ABC):
     #################################################
     # WAIT UTILITIES
     #################################################
-    def delay_sim_time(self, seconds_to_wait, reason=None):
+    def delay_sim_time(self, seconds_to_wait, reason):
         """Wait some second in SITL time."""
         tstart = self.get_sim_time()
         tnow = tstart
-        r = "Delaying %f seconds"
-        if reason is not None:
-            r += " for %s" % reason
-        self.progress(r % (seconds_to_wait,))
+        self.progress("Delaying %f seconds for %s" % (seconds_to_wait, reason))
         while tstart + seconds_to_wait > tnow:
             tnow = self.get_sim_time(drain_mav=False)
 
@@ -8218,7 +8231,10 @@ class TestSuite(abc.ABC):
             lat = m.lat * 1e-7
             lon = m.lon * 1e-7
             alt_m = m.alt * 0.001
-
+        elif m_type == "SIMSTATE":
+            lat = m.lat * 1e-7
+            lon = m.lng * 1e-7
+            alt_m = 0  # not available in SIMSTATE
         if lat == 0 and lon == 0:
             raise ValueError(f"Bad lat/lng {lat=} {lon=}")
 
@@ -8570,12 +8586,12 @@ class TestSuite(abc.ABC):
 
             # toggle ch12 to recover override-enable after a prior clear-by-pilot
             self.set_rc(12, 1000)
-            self.delay_sim_time(0.2)
+            self.delay_sim_time(0.2, "allow aux switch change to register")
             self.set_rc(12, 2000)
-            self.delay_sim_time(0.5)
+            self.delay_sim_time(0.5, "allow aux switch change to register")
 
             self.set_rc_from_map({1: 1500, 2: 1500, 3: 1500, 4: 1500})
-            self.delay_sim_time(0.5)
+            self.delay_sim_time(0.5, "let RC inputs settle")
 
             self._rc_overrides_send_single(override_ch, override_pwm)
             self.wait_rc_channel_value(override_ch, override_pwm, timeout=5)
@@ -8592,13 +8608,13 @@ class TestSuite(abc.ABC):
                 self.wait_rc_channel_value(override_ch, 1500, timeout=3)
             else:
                 # re-send override since it may have just expired
-                self.delay_sim_time(1.0)
+                self.delay_sim_time(1.0, "allow override to expire")
                 self._rc_overrides_send_single(override_ch, override_pwm)
                 self.wait_rc_channel_value(override_ch, override_pwm, timeout=2)
         finally:
             self._rc_overrides_release_single(override_ch)
             self.set_rc_from_map({1: 1500, 2: 1500, 3: 1500, 4: 1500})
-            self.delay_sim_time(0.2)
+            self.delay_sim_time(0.2, "let RC inputs settle")
             self.context_pop()
 
     def send_do_reposition(self,
@@ -8998,7 +9014,8 @@ Also, ignores heartbeats not from our target system'''
             m = self.mav.wait_heartbeat(*args, **x)
             if m is None:
                 continue
-            if m.get_srcSystem() == self.sysid_thismav():
+            if (m.get_srcSystem() == self.sysid_thismav() and
+                    m.get_srcComponent() == self.compid_thismav()):
                 return m
 
     def wait_ekf_happy(self, require_absolute=True, **kwargs):
@@ -10930,6 +10947,7 @@ Also, ignores heartbeats not from our target system'''
             self.arm_vehicle()
             tstart = self.get_sim_time()
             last_status = 0
+            low_rate_count = 0
             mavproxy.send('repeat add 1 dataflash_logger status\n')
             while True:
                 now = self.get_sim_time()
@@ -10945,7 +10963,11 @@ Also, ignores heartbeats not from our target system'''
                     if self.valgrind or self.callgrind:
                         desired_rate /= 10
                     if rate < desired_rate:
-                        raise NotAchievedException("Exceptionally low transfer rate (%u < %u)" % (rate, desired_rate))
+                        low_rate_count += 1
+                        if low_rate_count >= 2:
+                            raise NotAchievedException("Exceptionally low transfer rate (%u < %u)" % (rate, desired_rate))
+                    else:
+                        low_rate_count = 0
             self.disarm_vehicle()
             mavproxy.send('repeat remove 0\n')
         except Exception as e:  # noqa: BLE001
@@ -13135,7 +13157,11 @@ switch value'''
                       (count, attempt_count))
         return (seen_ids, id_seq)
 
-    def test_parameters_download(self):
+    def ParametersDownload(self):
+        '''check parameter download gives a consistent result'''
+        if self.is_balancebot():
+            # same binary and parameters as Rover
+            return
         self.start_subtest("parameter download")
         target_system = self.sysid_thismav()
         target_component = 1
@@ -13172,12 +13198,23 @@ switch value'''
             raise NotAchievedException("Enable parameter did not increase no of parameters downloaded")
         self.end_subsubtest("enable download")
 
-    def test_parameters_mis_total(self):
-        self.start_subsubtest("parameter mis_total")
+    def ParametersMIS_TOTAL(self):
+        '''check the GCS cannot set the internal-use-only MIS_TOTAL parameter'''
+        if self.is_balancebot():
+            # same binary and parameters as Rover
+            return
         if self.is_tracker():
             # uses CMD_TOTAL not MIS_TOTAL, and it's in a scalr not a
             # group and it's generally all bad.
             return
+        # Disable the simulated GPS and reboot so the EKF never establishes
+        # home during this test.  When home is set, AP_AHRS::set_home() calls
+        # AP_Mission::write_home_to_storage(), which bumps MIS_TOTAL from 0 to
+        # 1.  If that landed between the reads below the test would
+        # intermittently fail with "Total has changed".
+        self.set_parameters({"SIM_GPS1_ENABLE": 0})
+        self.reboot_sitl()
+
         self.start_subtest("Ensure GCS is not able to set MIS_TOTAL")
         old_mt = self.get_parameter("MIS_TOTAL", attempts=20) # retries to avoid seeming race condition with MAVProxy
         ex = None
@@ -13237,21 +13274,15 @@ switch value'''
         if failures:
             raise NotAchievedException("AP_SUBGROUPVARPTR entries missing @Group:/@Path: annotations")
 
-    def test_parameter_documentation(self):
+    def ParameterDocumentation(self):
         '''ensure parameter documentation is valid'''
+        if self.is_balancebot():
+            # same binary and parameters as Rover
+            return
         self.start_subsubtest("Check all parameters are documented")
         self.test_parameter_documentation_get_all_parameters()
         self.start_subsubtest("Check AP_SUBGROUPVARPTR entries have documentation annotations")
         self.test_subgroupvarptr_annotated()
-
-    def Parameters(self):
-        '''general small tests for parameter system'''
-        if self.is_balancebot():
-            # same binary and parameters as Rover
-            return
-        self.test_parameter_documentation()
-        self.test_parameters_mis_total()
-        self.test_parameters_download()
 
     def disabled_tests(self):
         return {}
@@ -14305,7 +14336,8 @@ switch value'''
         self.customise_SITL_commandline([
             "--serial5=tcp:%u" % port # serial5 spews to localhost port
         ])
-        frsky = FRSkyPassThrough(("127.0.0.1", port))
+        frsky = FRSkyPassThrough(("127.0.0.1", port),
+                                 get_time=self.get_sim_time_cached)
         frsky.connect()
 
         sport_to_mavlite = SPortToMAVlite()
@@ -15073,6 +15105,78 @@ switch value'''
         if mavextra.angle_diff(want, got) > 20:
             raise NotAchievedException("quat pitch differs from attitude pitch; want=%f got=%f" %
                                        (want, got))
+
+    def assert_AHR2_log_matches_primary(self):
+        '''check the AHR2 dataflash message (the secondary AHRS estimate) is
+        present in the current onboard log, that it tracks the primary
+        estimate (ATT/POS) and that its logged quaternion is consistent
+        with its logged eulers.  AHR2 and ATT are co-logged at the same
+        rate so the most-recently-seen ATT/POS is a valid comparison.'''
+        dfreader = self.dfreader_for_current_onboard_log()
+        att = None
+        pos = None
+        checked_attitude = 0
+        checked_position = 0
+        while True:
+            m = dfreader.recv_match(type=['ATT', 'POS', 'AHR2'])
+            if m is None:
+                break
+            m_type = m.get_type()
+            if m_type == 'ATT':
+                att = m
+                continue
+            if m_type == 'POS':
+                pos = m
+                continue
+
+            # m_type == 'AHR2'; compare the secondary attitude against
+            # the primary (ATT):
+            if att is not None:
+                for (field, secondary, primary) in [
+                        ('roll', m.Roll, att.Roll),
+                        ('pitch', m.Pitch, att.Pitch),
+                        ('yaw', m.Yaw, att.Yaw),
+                ]:
+                    if abs(mavextra.angle_diff(secondary, primary)) > 15:
+                        raise NotAchievedException(
+                            "AHR2.%s (%f) does not match ATT.%s (%f)" %
+                            (field, secondary, field, primary))
+                checked_attitude += 1
+
+            # the logging reads estimates->quaternion directly, so check
+            # the logged quaternion is normalised and consistent with the
+            # logged eulers:
+            qmag = math.sqrt(m.Q1**2 + m.Q2**2 + m.Q3**2 + m.Q4**2)
+            if abs(qmag - 1) > 0.02:
+                raise NotAchievedException(
+                    "AHR2 quaternion not normalised (mag=%f)" % qmag)
+            euler = quaternion.Quaternion([m.Q1, m.Q2, m.Q3, m.Q4]).euler
+            for (field, from_euler, from_log) in [
+                    ('roll', math.degrees(euler[0]), m.Roll),
+                    ('pitch', math.degrees(euler[1]), m.Pitch),
+                    ('yaw', math.degrees(euler[2]), m.Yaw),
+            ]:
+                if abs(mavextra.angle_diff(from_euler, from_log)) > 10:
+                    raise NotAchievedException(
+                        "AHR2 quaternion %s (%f) inconsistent with euler (%f)" %
+                        (field, from_euler, from_log))
+
+            # the secondary position should be close to the primary (POS):
+            if pos is not None and m.Lat != 0 and m.Lng != 0:
+                secondary_loc = mavutil.location(m.Lat, m.Lng, 0, 0)
+                primary_loc = mavutil.location(pos.Lat, pos.Lng, 0, 0)
+                dist = self.get_distance(primary_loc, secondary_loc)
+                if dist > 50:
+                    raise NotAchievedException(
+                        "AHR2 position %fm from primary (POS)" % dist)
+                checked_position += 1
+
+        if checked_attitude == 0:
+            raise NotAchievedException("Found no AHR2 messages to check attitude")
+        if checked_position == 0:
+            raise NotAchievedException("Found no AHR2 messages to check position")
+        self.progress("Checked AHR2 log (attitude=%u position=%u)" %
+                      (checked_attitude, checked_position))
 
     def MultipleGPS(self):
         '''check ArduPilot behaviour across multiple GPS units'''
@@ -16275,7 +16379,9 @@ SERIAL5_BAUD 128
             self.SetHome,
             self.ConfigErrorLoop,
             self.CPUFailsafe,
-            self.Parameters,
+            self.ParameterDocumentation,
+            self.ParametersMIS_TOTAL,
+            self.ParametersDownload,
             self.LoggerDocumentation,
             self.Logging,
             self.GetCapabilities,

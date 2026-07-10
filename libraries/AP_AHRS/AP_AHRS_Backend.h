@@ -68,6 +68,11 @@ public:
         // true if the AHRS has completed initialisation
         bool initialised;
 
+        // filter fault status bitmask (see NavFilterFaultBit); non-zero
+        // if the backend is reporting one or more filter faults.
+        // Backends with no concept of filter faults leave this zero.
+        uint16_t filter_faults;
+
         // inertial sensor information
         uint8_t primary_gyro;
 
@@ -79,6 +84,7 @@ public:
         float yaw_rad;
         Matrix3f dcm_matrix;
         Quaternion quaternion;
+        uint16_t attitude_reset_count;  // counter incremented each time a sudden shift happens in attitude
 
         // backends must always return the result in the vehicle body
         // frame.  A backend using the autopilot sensors will need to
@@ -148,6 +154,12 @@ public:
          * origin-relative functions
          */
         bool provides_common_origin;
+
+        // origin-relative position:
+        Vector2p position_NE;
+        bool position_NE_valid;  // true if position_NE is valid
+        postype_t position_D;
+        bool position_D_valid;   // true if position_D is valid
 
         bool get_hagl(float &height) const WARN_IF_UNUSED {
             height = hagl;
@@ -285,25 +297,6 @@ public:
         return false;
     }
     virtual bool get_origin(Location &ret) const = 0;
-
-    // return a position relative to origin in meters, North/East/Down
-    // order. This will only be accurate if have_inertial_nav() is
-    // true
-    virtual bool get_relative_position_NED_origin(Vector3p &vec) const WARN_IF_UNUSED {
-        return false;
-    }
-
-    // return a position relative to origin in meters, North/East
-    // order. Return true if estimate is valid
-    virtual bool get_relative_position_NE_origin(Vector2p &vecNE) const WARN_IF_UNUSED {
-        return false;
-    }
-
-    // return a Down position relative to origin in meters
-    // Return true if estimate is valid
-    virtual bool get_relative_position_D_origin(postype_t &posD) const WARN_IF_UNUSED {
-        return false;
-    }
 
     // return true if we will use compass for yaw
     virtual bool use_compass(void) = 0;

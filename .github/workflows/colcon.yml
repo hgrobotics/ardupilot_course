@@ -152,14 +152,14 @@ jobs:
       image: ardupilot/ardupilot-dev-ros:latest
     steps:
       # Sparse checkout to make .github/actions/* available without polluting the colcon workspace
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
           sparse-checkout: .github
           sparse-checkout-cone-mode: false
       # git checkout the PR
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: 'recursive'
           path: src/ardupilot
@@ -177,7 +177,6 @@ jobs:
         run: |
           apt update
           rosdep update
-          python3 -m pip install flake8
           source /opt/ros/humble/setup.bash
           rosdep install --from-paths src --ignore-src --default-yes
       - name: Install MAVProxy
@@ -189,13 +188,6 @@ jobs:
         working-directory: ./src/ardupilot/modules/mavlink/pymavlink
         run: |
           python3 -m pip install . --upgrade --user
-      # install Micro-XRCE-DDS-Gen from source until image is updated
-      - name: install Micro-XRCE-DDS-Gen from source
-        run: |
-          cd /tmp
-          git clone --depth 1 --recurse-submodules --branch v4.7.1 https://github.com/ardupilot/Micro-XRCE-DDS-Gen.git
-          cd Micro-XRCE-DDS-Gen
-          ./gradlew assemble
       - name: Build with colcon
         shell: 'bash'
         run: |
