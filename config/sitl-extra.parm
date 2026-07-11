@@ -4,13 +4,40 @@
 # Every name here must exist in this firmware: SITL calls AP_HAL::panic() if a
 # defaults file contains an unknown parameter (AP_Param.cpp, load_defaults_file
 # _from_filesystem), so a stale name is a hard boot failure, not a warning.
+#
+# These are DEFAULTS, not values. A parameter already written to
+# sitl-run/eeprom.bin -- by QGroundControl, or by an earlier session -- keeps
+# its stored value and ignores the line here. So a setting below can silently
+# not be in force; ./sitl.sh --wipe resets the EEPROM and makes these win.
 
-# Terrain off. SITL's terrain subsystem does blocking tile I/O from inside the
-# lockstep physics loop, which stalls the sim at high --speedup. QGroundControl
-# serves terrain over MAVLink anyway; turn these back on only for a mission
-# that actually needs AGL waypoints.
+# Terrain off by default: a flat sim needs no tiles and no GCS to serve them.
+# Run ./sitl.sh --terrain to layer config/sitl-terrain.parm over this and get
+# real elevation. TERRAIN_FOLLOW stays off even then -- it makes Plane hold a
+# terrain-relative altitude, which is a flight-behaviour change, not a sensor.
+#
+# An earlier note here claimed terrain does blocking tile I/O inside the
+# lockstep physics loop and stalls the sim at high --speedup. That is not what
+# the code does: schedule_disk_io() is a non-blocking state machine and the
+# read()/write() run on the IO thread (TerrainIO.cpp, register_io_process).
+# Measured parked at --speedup=20: 6.9x with terrain, 7.1x without.
 TERRAIN_ENABLE 0
 TERRAIN_FOLLOW 0
+
+# Simulated downward rangefinder, so a terrain-clearance mission has an
+# altimeter to read. Type 100 is the SITL backend (AP_RangeFinder.h Type::SIM);
+# it publishes SITL's height_agl.
+#
+# That height is terrain-aware ONLY when TERRAIN_ENABLE=1 and a tile covers the
+# vehicle. Otherwise set_height_agl() (AP_HAL_SITL/SITL_State.cpp) silently
+# falls back to a flat-earth model and reports height above HOME. Nothing warns
+# you: the sensor still tracks your climbs and descents, it just never sees a
+# hill. ./sitl.sh --terrain checks for the tile up front for that reason.
+RNGFND1_TYPE 100
+RNGFND1_ORIENT 25
+RNGFND1_MIN_CM 20
+# 32767 cm = 327.67 m is the ceiling, not a choice: min/max are AP_Int16
+# centimetres in 4.5.x (they become metre floats in 4.6's RNGFND1_MAX).
+RNGFND1_MAX_CM 32767
 
 # Log from boot rather than from arming, so a session that never arms still
 # leaves a .bin behind under sitl-run/logs/.

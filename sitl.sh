@@ -9,6 +9,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_DIR="$ROOT/sitl-run"
 LOCATIONS="$ROOT/Tools/autotest/locations.txt"
 BIN="$ROOT/build/sitl/bin/arduplane"
+EXTRA_PARM="$ROOT/config/sitl-extra.parm"
+TERRAIN_PARM="$ROOT/config/sitl-terrain.parm"
+TERRAIN_PY="$ROOT/sitl-terrain.py"
 
 # waf deadlocks under python 3.12; 3.10 is the known-good interpreter here.
 WAF_PY="${WAF_PYTHON:-python3.10}"
@@ -19,7 +22,7 @@ LAT=; LON=; ALT=; YAW=
 SPEEDUP=1
 INSTANCE=0
 QGC_PORT=14550
-REBUILD=0; NO_BUILD=0; WIPE=0; DRY_RUN=0
+REBUILD=0; NO_BUILD=0; WIPE=0; DRY_RUN=0; TERRAIN=0; ALT_EXPLICIT=0
 
 log() { printf '[sitl] %s\n' "$*" >&2; }
 die() { printf '[sitl] error: %s\n' "$*" >&2; exit 1; }
@@ -32,6 +35,8 @@ usage() {
   --loc NAME       home from Tools/autotest/locations.txt (default CMAC)
   --lat/--lon      explicit home; overrides --loc
   --alt/--yaw      absolute altitude (m) and heading (deg), default 0
+  --terrain        read elevation from the terrain database, and take the home
+                   altitude from it so the rangefinder reads 0 on the ground
   --speedup N      simulation speed multiplier (default 1)
   --instance N     shifts every port by 10*N (default 0)
   --qgc-port N     UDP port QGC listens on (default 14550)
@@ -40,6 +45,9 @@ usage() {
   --no-build       fail instead of building a missing binary
   --dry-run        print the SITL command and exit
   -h, --help
+
+A downward rangefinder is always simulated (RNGFND1_TYPE 100). Without
+--terrain it measures height above HOME, not above ground.
 
 Start QGroundControl and it will find the vehicle on its own.
 EOF
@@ -51,8 +59,9 @@ while [[ $# -gt 0 ]]; do
     --loc)       LOC="$2"; shift 2 ;;
     --lat)       LAT="$2"; shift 2 ;;
     --lon)       LON="$2"; shift 2 ;;
-    --alt)       ALT="$2"; shift 2 ;;
+    --alt)       ALT="$2"; ALT_EXPLICIT=1; shift 2 ;;
     --yaw)       YAW="$2"; shift 2 ;;
+    --terrain)   TERRAIN=1; shift ;;
     --speedup)   SPEEDUP="$2"; shift 2 ;;
     --instance)  INSTANCE="$2"; shift 2 ;;
     --qgc-port)  QGC_PORT="$2"; shift 2 ;;
@@ -77,7 +86,61 @@ else
   [[ -f "$LOCATIONS" ]] || die "locations file not found: $LOCATIONS"
   home="$(awk -F= -v n="$LOC" '$1==n {print $2; exit}' "$LOCATIONS")"
   [[ -n "$home" ]] || die "unknown location '$LOC' (names are listed in $LOCATIONS)"
-  IFS=, read -r LAT LON ALT YAW <<<"$home"
+  IFS=, read -r LAT LON loc_alt loc_yaw <<<"$home"
+  # an explicit --alt/--yaw beats the locations file rather than being clobbered
+  (( ALT_EXPLICIT )) || ALT="$loc_alt"
+  [[ -n "$YAW" ]] || YAW="$loc_yaw"
+fi
+
+DEFAULTS="$FRAME_PARM,$EXTRA_PARM"
+
+# SITL anchors the simulated ground plane at the home altitude passed below,
+# but the simulated rangefinder measures against the absolute terrain database
+# (set_height_agl(), AP_HAL_SITL/SITL_State.cpp). Disagree on the two and the
+# rangefinder shows a constant (home alt - terrain alt) offset while the
+# vehicle is parked, so default the home altitude to what the database says.
+if (( TERRAIN )); then
+  [[ -f "$TERRAIN_PARM" ]] || die "missing $TERRAIN_PARM"
+  [[ -f "$TERRAIN_PY" ]]   || die "missing $TERRAIN_PY"
+  command -v python3 >/dev/null || die "--terrain needs python3 to read the terrain tiles"
+  DEFAULTS="$DEFAULTS,$TERRAIN_PARM"
+
+  # --defaults sets DEFAULTS, and a value already stored in the EEPROM beats a
+  # default. So a saved TERRAIN_ENABLE=0 -- one stray write from QGC -- makes
+  # --terrain a silent no-op: home still gets anchored on the terrain below, so
+  # the launch looks right, while height_agl quietly stays flat-earth. There is
+  # no command line option to force a value (SITL's -P sets a default too), so
+  # say it out loud instead of pretending.
+  if [[ -f "$RUN_DIR/eeprom.bin" ]] && (( ! WIPE )); then
+    log "terrain  NOTE: $RUN_DIR/eeprom.bin exists, and a stored parameter overrides"
+    log "terrain        the defaults below. If QGC shows TERRAIN_ENABLE 0 after boot,"
+    log "terrain        --terrain did nothing: rerun with --wipe, or set it in QGC."
+  fi
+
+  spacing="$(awk '$1=="TERRAIN_SPACING" {print $2; exit}' "$TERRAIN_PARM")"
+  if terrain_alt="$(python3 "$TERRAIN_PY" "$LAT" "$LON" \
+                      --terrain-dir "$RUN_DIR/terrain" --spacing "${spacing:-100}" 2>&1)"; then
+    if (( ALT_EXPLICIT )); then
+      bias="$(awk -v a="$ALT" -v t="$terrain_alt" 'BEGIN{printf "%.1f", a-t}')"
+      log "terrain  ground at home is ${terrain_alt}m AMSL; keeping --alt ${ALT}m"
+      if [[ "$(awk -v b="$bias" 'BEGIN{print (b>=1 || b<=-1) ? 1 : 0}')" == 1 ]]; then
+        log "terrain  WARNING: parked on the ground the rangefinder will read ${bias}m,"
+        log "terrain           not 0. Drop --alt to anchor home on the terrain."
+      fi
+    else
+      log "terrain  home altitude ${ALT}m -> ${terrain_alt}m AMSL (from the terrain database)"
+      ALT="$terrain_alt"
+    fi
+  else
+    # A failed lookup is not fatal, and that is the danger: SITL silently falls
+    # back to a flat-earth model rather than erroring, so say so loudly here.
+    log "terrain  WARNING: $terrain_alt"
+    log "terrain           No tile covers $LAT,$LON, so height_agl falls back to a flat"
+    log "terrain           earth model: the rangefinder will report height above HOME"
+    log "terrain           and never see a hill, with no error at any point."
+    log "terrain           Attach QGroundControl and fly the area once -- it streams"
+    log "terrain           tiles over MAVLink into $RUN_DIR/terrain -- then rerun."
+  fi
 fi
 
 if [[ $REBUILD -eq 1 || ! -x "$BIN" ]]; then
@@ -116,7 +179,7 @@ cmd=( "$BIN"
       "--home=$LAT,$LON,$ALT,$YAW"
       "--speedup=$SPEEDUP"
       "--instance=$INSTANCE"
-      "--defaults=$FRAME_PARM,$ROOT/config/sitl-extra.parm"
+      "--defaults=$DEFAULTS"
       "--serial0=tcp:0"
       "--serial1=udpclient:127.0.0.1:$QGC_PORT" )
 (( WIPE )) && cmd+=( "--wipe" )

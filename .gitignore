@@ -166,3 +166,6 @@ ENV/
 env.bak/
 venv.bak/
 autotest_result_*_junit.xml
+
+# Claude Code context handovers (personal working state)
+handover/

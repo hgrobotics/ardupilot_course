@@ -1,0 +1,18 @@
+# Terrain overlay. ./sitl.sh --terrain appends this to the --defaults list,
+# after config/sitl-extra.parm, so these win over the TERRAIN_ENABLE 0 there.
+# Later files override earlier ones (AP_Param::load_defaults_file).
+#
+# With this on, SITL's simulated rangefinder (RNGFND1_TYPE 100, set in
+# sitl-extra.parm) reads real elevation out of the .DAT tiles under
+# sitl-run/terrain/ instead of measuring height above home.
+#
+# Tiles come from the GCS over MAVLink: connect QGroundControl and it streams
+# them as the vehicle flies, caching into sitl-run/terrain/. Fly somewhere with
+# no cached tile and no GCS attached and terrain lookups just fail, which drops
+# the rangefinder back to the flat-earth model without any error.
+TERRAIN_ENABLE 1
+
+# Must match the spacing the .DAT tiles were written with, or every lookup
+# misses: find_grid_cache() compares grid.spacing against this and treats a
+# mismatch as a different, absent grid. The cached tiles are 100 m.
+TERRAIN_SPACING 100
