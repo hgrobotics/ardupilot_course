@@ -19,7 +19,8 @@ Established by reading the tree, not inferred:
 | Fact | Source |
 |---|---|
 | `RNGFND_LANDING` defaults to **0** | `ArduPlane/Parameters.cpp:779` |
-| Plane reads the rangefinder **only** when `rangefinder_landing && flight_stage == LAND` | `ArduPlane/altitude.cpp:623-627` |
+| `rangefinder_correction()` gates on `rangefinder_landing && flight_stage == LAND` | `ArduPlane/altitude.cpp:623-627` |
+| But the sensor is **polled regardless**, and `rangefinder_state.correction` is populated on `in_range` alone — the landing slope-bump reads it directly, guarded only by `LAND_SLOPE_RCALC` (default 2.0). So `RNGFND_LANDING=0` does **not** make the lidar inert. | `AP_Landing_Slope.cpp:190-207`, `mode.cpp:171`, `AP_Landing.cpp:35` |
 | The in-range latch is scaled by max range: 10 samples differing >5% of max, reset on a >20% jump | `ArduPlane/altitude.cpp:673-685` |
 | The frontend sets `OutOfRangeHigh` above `RNGFND1_MAX_CM`; it does **not** clamp the value | `AP_RangeFinder_Backend.cpp:56-66` |
 | Every rangefinder instance is fed from one `rangefinder_range()` | `SIM_Aircraft.cpp:971-975` |
@@ -29,8 +30,10 @@ Established by reading the tree, not inferred:
 
 Two consequences drive the design:
 
-1. **The lidar is simulated but unused.** `RNGFND_LANDING` is never set on this
-   branch, so it sits at 0 and Plane ignores the sensor entirely. This is the gap.
+1. **The lidar is simulated but never feeds the landing controller.** `RNGFND_LANDING`
+   is never set on this branch, so it sits at 0: the correction never reaches TECS and
+   "Rangefinder engaged" never arms. This is the gap. (It does *not* mean the sensor is
+   inert — see the slope-bump row above; that path reads the correction either way.)
 2. **`RNGFND1_MAX_CM 32767` is not a neutral "no limit".** It scales the in-range
    latch thresholds to 16.4 m / 65.5 m, where a real 180 m sensor gives 9 m / 36 m.
    The current setting makes SITL's landing latch *less sensitive than the aircraft's*.
