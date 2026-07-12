@@ -24,7 +24,7 @@ Established by reading the tree, not inferred:
 | The frontend sets `OutOfRangeHigh` above `RNGFND1_MAX_CM`; it does **not** clamp the value | `AP_RangeFinder_Backend.cpp:56-66` |
 | Every rangefinder instance is fed from one `rangefinder_range()` | `SIM_Aircraft.cpp:971-975` |
 | `rangefinder_range()` applies `SIM_SONAR_RND` noise and `SIM_SONAR_POS` offset — and no max-range clamp | `SIM_Aircraft.cpp:503-560` |
-| `SIM_SONAR_GLITCH` is declared and registered but **never read** — dead in 4.5.7 | `SITL.h:186`, `SITL.cpp:96` |
+| `SIM_SONAR_GLITCH` is read **only** by the analog rangefinder path, which `RNGFND1_TYPE 100` never takes | `AP_HAL_SITL/sitl_rangefinder.cpp:28` (`_sonar_pin_voltage`) |
 | A stored eeprom value beats a `--defaults` file; there is no CLI override | `SITL-CHEATSHEET.md` gotcha #1 |
 
 Two consequences drive the design:
@@ -106,8 +106,11 @@ The acting layer is the live parameter, never the `.parm` file (gotcha #1).
 - **Sensor noise.** `SIM_SONAR_RND` stays 0. The TF03's real error (±10 cm close in,
   ±1% ≈ 1.8 m at 180 m) is dwarfed by the ~11 m baro bias, and a deterministic sim is
   worth more than cosmetic jitter. Document the knob; don't set it.
-- **Glitch / dropout.** `SIM_SONAR_GLITCH` is dead code in 4.5.7. Cannot be offered
-  without writing it.
+- **Glitch / dropout.** `SIM_SONAR_GLITCH` cannot help — not because it does nothing,
+  but because it is read only by the *analog* rangefinder path
+  (`_sonar_pin_voltage()`), and `RNGFND1_TYPE 100` (`Type::SIM`) never goes through it:
+  it reads `rangefinder_m[]` straight from `Aircraft::rangefinder_range()`, which
+  consults `sonar_noise` and not `sonar_glitch`. Glitching would have to be written.
 - **Simulating the TF03 serial device.** SITL ships `sim:benewake_tf03` (driver type
   27), which would exercise the real Benewake driver including its quirk that
   *exactly* 18000 cm means out-of-range. Rejected: the generic backend already models
