@@ -72,9 +72,27 @@ SITL writes into its working directory, so everything lands here:
 the terrain database says the ground is at home — otherwise the parked
 rangefinder reads a constant `home_alt - terrain_alt` offset instead of 0.
 
-A downward rangefinder (`RNGFND1_TYPE 100`, SITL backend, 327.67 m ceiling) is
-**always** simulated. Without `--terrain` it measures height above **home**, not
-above ground: it still tracks your climbs and descents, it just never sees a hill.
+A downward **Benewake TF03** lidar (`RNGFND1_TYPE 100`, SITL backend) is **always**
+simulated, carrying the real sensor's limits — **0.1–180 m**. Past 180 m the reading
+goes `OutOfRangeHigh` and Plane falls back to the baro. Without `--terrain` it
+measures height above **home**, not above ground: it still tracks your climbs and
+descents, it just never sees a hill.
+
+`RNGFND_LANDING 1` is what makes the lidar's correction reach TECS. At the firmware
+default of `0` it never gets there and "Rangefinder engaged" never arms, so the landing
+flies on the biased baro — which is why a stored `eeprom.bin` holding `RNGFND_LANDING 0`
+quietly guts this config. `sitl.sh` warns; `--wipe` fixes it.
+
+But `0` does **not** mean the sensor is inert, and don't read it that way: it is still
+polled every cycle, and the landing slope-recalc
+(`adjust_landing_slope_for_rangefinder_bump()`, guarded only by `LAND_SLOPE_RCALC`,
+default 2.0) reads its correction directly even at `0`. Landing is still the only thing
+ArduPlane ever uses a rangefinder for.
+
+`RNGFND1_MAX_CM` is not just a cutoff: `rangefinder_height_update()` scales its
+in-range latch off it (10 samples differing from the first by >5% of max, reset
+on a >20% jump). Padding it doesn't only admit impossible readings — it
+desensitises the landing latch.
 
 **Getting tiles.** They arrive from the GCS over MAVLink. Connect QGroundControl
 and fly the area once; it streams tiles into `sitl-run/terrain/`. Currently
@@ -120,6 +138,9 @@ Measured: a mission commanding 1250 m at a ridge actually flew **1194.8 m true**
 - Never read flown clearance off the EKF (`POS.Alt`) or `TERRAIN_REPORT` — both
   inherit the bias. Use `SIM.Alt` from the `.BIN` (ground truth), cross-check `GPS.Alt`.
 - `EK3_SRC1_POSZ=3` (GPS) removes it: same flight peaked 1250.4 m true.
+- On a LAND approach the TF03 now corrects this below 180 m AGL, where the bias is
+  worth ~11 m — so expect a visible height correction when the lidar latches in
+  range. That is the sim modelling what the sensor is *for*, not a regression.
 - Open question: pure SITL atmosphere artifact, or does it show on real hardware?
   Not settled — check a real baro before trusting a tight margin over a high ridge.
 
@@ -171,7 +192,7 @@ reports success.
 
 ## Printing
 
-`SITL-CHEATSHEET.pdf` (3 pages, A4) is derived and gitignored — regenerate it:
+`SITL-CHEATSHEET.pdf` (4 pages, A4) is derived and gitignored — regenerate it:
 
 ```bash
 SP=$(mktemp -d); cp sitl-cheatsheet-print.css "$SP/print.css"
