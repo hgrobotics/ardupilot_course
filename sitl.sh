@@ -27,6 +27,29 @@ REBUILD=0; NO_BUILD=0; WIPE=0; DRY_RUN=0; TERRAIN=0; ALT_EXPLICIT=0
 log() { printf '[sitl] %s\n' "$*" >&2; }
 die() { printf '[sitl] error: %s\n' "$*" >&2; exit 1; }
 
+# --defaults sets DEFAULTS, and a value already stored in the EEPROM beats a
+# default: AP_Param only takes a default for a parameter it has never seen. So any
+# eeprom.bin left by an earlier session -- or one stray write from QGC -- makes a
+# line in config/*.parm a silent no-op. There is no command line option to force a
+# value (SITL's -P sets a default too), so say it out loud instead of pretending.
+warn_eeprom_overrides() {
+  [[ -f "$RUN_DIR/eeprom.bin" ]] && (( ! WIPE )) || return 0
+
+  log "eeprom   NOTE: $RUN_DIR/eeprom.bin exists and a stored parameter beats a"
+  log "eeprom         default, so a line in config/*.parm can be a silent no-op."
+  log "eeprom         Confirm these in QGC after boot; if one is wrong, --wipe:"
+  log "eeprom           RNGFND_LANDING 1 -- at 0 the TF03 is simulated and then"
+  log "eeprom                              ignored: ArduPlane only ever reads a"
+  log "eeprom                              rangefinder for landing, and only when"
+  log "eeprom                              this is 1."
+  if (( TERRAIN )); then
+    log "eeprom           TERRAIN_ENABLE 1 -- at 0 --terrain did nothing: home is"
+    log "eeprom                              still anchored on the terrain, so the"
+    log "eeprom                              launch looks right while height_agl"
+    log "eeprom                              quietly stays flat-earth."
+  fi
+}
+
 usage() {
   cat <<'EOF'
 ./sitl.sh [options]      launch ArduPlane SITL for QGroundControl
@@ -46,8 +69,8 @@ usage() {
   --dry-run        print the SITL command and exit
   -h, --help
 
-A downward rangefinder is always simulated (RNGFND1_TYPE 100). Without
---terrain it measures height above HOME, not above ground.
+A downward Benewake TF03 lidar is always simulated (0.1-180 m, used for landing
+only). Without --terrain it measures height above HOME, not above ground.
 
 Start QGroundControl and it will find the vehicle on its own.
 EOF
@@ -104,18 +127,6 @@ if (( TERRAIN )); then
   [[ -f "$TERRAIN_PY" ]]   || die "missing $TERRAIN_PY"
   command -v python3 >/dev/null || die "--terrain needs python3 to read the terrain tiles"
   DEFAULTS="$DEFAULTS,$TERRAIN_PARM"
-
-  # --defaults sets DEFAULTS, and a value already stored in the EEPROM beats a
-  # default. So a saved TERRAIN_ENABLE=0 -- one stray write from QGC -- makes
-  # --terrain a silent no-op: home still gets anchored on the terrain below, so
-  # the launch looks right, while height_agl quietly stays flat-earth. There is
-  # no command line option to force a value (SITL's -P sets a default too), so
-  # say it out loud instead of pretending.
-  if [[ -f "$RUN_DIR/eeprom.bin" ]] && (( ! WIPE )); then
-    log "terrain  NOTE: $RUN_DIR/eeprom.bin exists, and a stored parameter overrides"
-    log "terrain        the defaults below. If QGC shows TERRAIN_ENABLE 0 after boot,"
-    log "terrain        --terrain did nothing: rerun with --wipe, or set it in QGC."
-  fi
 
   spacing="$(awk '$1=="TERRAIN_SPACING" {print $2; exit}' "$TERRAIN_PARM")"
   if terrain_alt="$(python3 "$TERRAIN_PY" "$LAT" "$LON" \
@@ -183,6 +194,8 @@ cmd=( "$BIN"
       "--serial0=tcp:0"
       "--serial1=udpclient:127.0.0.1:$QGC_PORT" )
 (( WIPE )) && cmd+=( "--wipe" )
+
+warn_eeprom_overrides
 
 if (( DRY_RUN )); then printf '%s\n' "${cmd[*]}"; exit 0; fi
 
