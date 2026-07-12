@@ -61,6 +61,12 @@ which is still landing.
 Every name must exist in this firmware: an unknown name in a defaults file is
 `AP_HAL::panic()`, a hard boot failure. All five are verified present.
 
+**CORRECTION (whole-branch review, verified empirically):** that is FALSE. An unknown
+name is **silently skipped** — `read_param_defaults_file()` continues and
+`load_defaults_file()` still returns true; the panic fires only if the *file* can't be
+opened. A defaults file holding `RNGFND_LNADING` boots clean. So a typo is a silent
+no-op, and a clean boot proves nothing. Only the live MAVLink read does.
+
 ### 2. Eeprom guard — `sitl.sh`
 
 A stored `RNGFND_LANDING 0` — one stray QGC write, or any eeprom from before this
@@ -101,8 +107,9 @@ The acting layer is the live parameter, never the `.parm` file (gotcha #1).
    `RNGFND1_MAX_CM`, `RNGFND1_MIN_CM`. Must read **1 / 18000 / 10**. Reading the file
    back proves nothing.
 2. With a stale `sitl-run/eeprom.bin` and no `--wipe`, confirm the new warning fires.
-3. SITL must still boot: an unknown param name is a panic, so a clean boot is itself
-   the check that all five names exist in 4.5.7.
+3. ~~SITL must still boot: an unknown param name is a panic~~ — **wrong, see the
+   correction above.** A clean boot does NOT prove the names exist; a typo is silently
+   skipped. Step 1's live MAVLink read is the only check that a name is in force.
 
 ## Non-goals
 
