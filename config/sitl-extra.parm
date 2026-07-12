@@ -47,11 +47,21 @@ RNGFND1_MIN_CM 10
 # does not just admit impossible readings, it desensitises the landing latch.
 RNGFND1_MAX_CM 18000
 
-# Without this the TF03 has no effect on flight at all. rangefinder_height_update()
-# still polls the sensor every cycle, but rangefinder_correction() gates USE of the
-# reading on (RNGFND_LANDING && flight_stage == LAND), so at the firmware default of 0
-# every consumer ignores it. Landing is also the only thing ArduPlane ever uses a
-# rangefinder for, so "landing only" needs no further restricting.
+# What this actually switches on: rangefinder_correction() gates on (RNGFND_LANDING &&
+# flight_stage == LAND), so at the firmware default of 0 the lidar never feeds TECS and
+# rangefinder_state.in_use ("Rangefinder engaged") never arms. Setting it to 1 is what
+# makes the sensor do its job.
+#
+# It does NOT gate the sensor being read. rangefinder_height_update() polls every cycle
+# and populates rangefinder_state.correction whenever the lidar is merely in_range --
+# no RNGFND_LANDING check. And adjust_landing_slope_for_rangefinder_bump()
+# (AP_Landing_Slope.cpp, called from mode.cpp on every landing approach) reads that
+# .correction DIRECTLY, guarded only by LAND_SLOPE_RCALC (default 2.0, not 0). So even
+# at RNGFND_LANDING=0 an in-range lidar can already re-cut the glide slope. Do not read
+# "0" as "the rangefinder is inert".
+#
+# Landing is still the only thing ArduPlane ever uses a rangefinder for, so "landing
+# only" needs no further restricting.
 #
 # A stored eeprom.bin value beats this default -- ./sitl.sh says so, --wipe fixes it.
 RNGFND_LANDING 1
