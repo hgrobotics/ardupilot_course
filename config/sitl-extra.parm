@@ -47,10 +47,11 @@ RNGFND1_MIN_CM 10
 # does not just admit impossible readings, it desensitises the landing latch.
 RNGFND1_MAX_CM 18000
 
-# Without this ArduPlane never reads the rangefinder at all: rangefinder_correction()
-# gates on (RNGFND_LANDING && flight_stage == LAND), so at the firmware default of 0
-# the TF03 is simulated and then ignored. Landing is also the only thing ArduPlane
-# ever uses a rangefinder for, so "landing only" needs no further restricting.
+# Without this the TF03 has no effect on flight at all. rangefinder_height_update()
+# still polls the sensor every cycle, but rangefinder_correction() gates USE of the
+# reading on (RNGFND_LANDING && flight_stage == LAND), so at the firmware default of 0
+# every consumer ignores it. Landing is also the only thing ArduPlane ever uses a
+# rangefinder for, so "landing only" needs no further restricting.
 #
 # A stored eeprom.bin value beats this default -- ./sitl.sh says so, --wipe fixes it.
 RNGFND_LANDING 1
@@ -58,8 +59,14 @@ RNGFND_LANDING 1
 # Deliberately NOT set: SIM_SONAR_RND, the sensor noise amplitude (default 0). The
 # TF03's real error -- +/-10 cm close in, ~1% (1.8 m) at 180 m -- is dwarfed by the
 # ~6% baro bias in SITL-CHEATSHEET.md, and a deterministic sim is worth more than
-# cosmetic jitter. SIM_SONAR_GLITCH is dead code in 4.5.7: declared (SITL.h:186) and
-# registered (SITL.cpp:96) but never read, so setting it does nothing.
+# cosmetic jitter.
+#
+# SIM_SONAR_GLITCH cannot help here either -- but NOT because it does nothing. It is
+# read (AP_HAL_SITL/sitl_rangefinder.cpp, _sonar_pin_voltage) by the ANALOG rangefinder
+# path, where it forces a max-distance reading with the given probability. RNGFND1_TYPE
+# 100 never goes through that path: Type::SIM reads rangefinder_m[] straight from
+# Aircraft::rangefinder_range(), which consults sonar_noise and not sonar_glitch. So
+# setting it has no effect on THIS config, and glitching would have to be written.
 
 # Log from boot rather than from arming, so a session that never arms still
 # leaves a .bin behind under sitl-run/logs/.
