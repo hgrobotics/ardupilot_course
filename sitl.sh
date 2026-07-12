@@ -31,13 +31,18 @@ die() { printf '[sitl] error: %s\n' "$*" >&2; exit 1; }
 # default: AP_Param only takes a default for a parameter it has never seen. So any
 # eeprom.bin left by an earlier session -- or one stray write from QGC -- makes a
 # line in config/*.parm a silent no-op. There is no command line option to force a
-# value (SITL's -P sets a default too), so say it out loud instead of pretending.
+# value -- -P does not help and is a trap: SITL's _set_param_default() actually calls
+# set_and_save(), so on a fresh eeprom it WRITES the value permanently, and on an
+# existing one load_all() overwrites it afterwards. --wipe is the only lever, so say
+# it out loud instead of pretending.
 warn_eeprom_overrides() {
   [[ -f "$RUN_DIR/eeprom.bin" ]] && (( ! WIPE )) || return 0
 
-  log "eeprom   NOTE: $RUN_DIR/eeprom.bin exists and a stored parameter beats a"
-  log "eeprom         default, so a line in config/*.parm can be a silent no-op."
-  log "eeprom         Confirm these in QGC after boot; if one is wrong, --wipe:"
+  log "eeprom   NOTE: $RUN_DIR/eeprom.bin exists, and a parameter STORED in it beats"
+  log "eeprom         the config/*.parm defaults. Only params something explicitly"
+  log "eeprom         wrote are stored -- QGC, MAVProxy, -P -- so a plain run saves"
+  log "eeprom         none of these and this is usually nothing. But if you have ever"
+  log "eeprom         set one by hand, confirm it in QGC after boot, or just --wipe:"
   log "eeprom           RNGFND_LANDING 1 -- at 0 the TF03's correction never reaches"
   log "eeprom                              TECS and 'Rangefinder engaged' never arms,"
   log "eeprom                              so the landing flies on the biased baro."
@@ -68,8 +73,9 @@ usage() {
   --dry-run        print the SITL command and exit
   -h, --help
 
-A downward Benewake TF03 lidar is always simulated (0.1-180 m, used for landing
-only). Without --terrain it measures height above HOME, not above ground.
+A downward Benewake TF03 lidar is always simulated (0.1-180 m, used for landing,
+and quadplane VTOL height checks). Without --terrain it measures height above
+HOME, not above ground.
 
 Start QGroundControl and it will find the vehicle on its own.
 EOF

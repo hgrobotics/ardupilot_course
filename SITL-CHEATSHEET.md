@@ -86,8 +86,12 @@ quietly guts this config. `sitl.sh` warns; `--wipe` fixes it.
 But `0` does **not** mean the sensor is inert, and don't read it that way: it is still
 polled every cycle, and the landing slope-recalc
 (`adjust_landing_slope_for_rangefinder_bump()`, guarded only by `LAND_SLOPE_RCALC`,
-default 2.0) reads its correction directly even at `0`. Landing is still the only thing
-ArduPlane ever uses a rangefinder for.
+default 2.0) reads its correction directly even at `0`.
+
+That's the whole story on fixed-wing. On a **quadplane** — the default frame here —
+`RNGFND_LANDING 1` also switches `relative_ground_altitude()` to the lidar, and
+`update_throttle_suppression()` (`quadplane.cpp:1965`) reads it in every VTOL mode with
+no enabling param of its own.
 
 `RNGFND1_MAX_CM` is not just a cutoff: `rangefinder_height_update()` scales its
 in-range latch off it (10 samples differing from the first by >5% of max, reset
@@ -123,7 +127,8 @@ flat-earth model, with no error at any point.
 
 **1. `.parm` files are DEFAULTS, not values.** A param already in
 `sitl-run/eeprom.bin` — written by QGC, or by an earlier session — ignores the
-file. There is no CLI option to force a value (`-P` also only sets a default).
+file. There is no CLI option to force a value (`-P` is worse than useless here: it
+calls `set_and_save()`, so on a fresh eeprom it *writes* the value permanently).
 Only `--wipe` makes the files win. So `--terrain` can be a **silent no-op** if a
 stray `TERRAIN_ENABLE 0` got saved; `sitl.sh` warns when an EEPROM exists.
 Never verify param-driven behaviour by reading the `.parm` file — read the live
@@ -144,9 +149,14 @@ Measured: a mission commanding 1250 m at a ridge actually flew **1194.8 m true**
 - Open question: pure SITL atmosphere artifact, or does it show on real hardware?
   Not settled — check a real baro before trusting a tight margin over a high ridge.
 
-**3. An unknown parameter name in a `.parm` file is a hard boot failure**, not a
-warning — `AP_Param` calls `AP_HAL::panic()`. Every name in `config/*.parm` must
-exist in *this* firmware.
+**3. A typo in a `.parm` name is a SILENT no-op**, not a boot failure — and nothing
+warns you. `read_param_defaults_file()` skips an unknown name and still reports
+success; the "Ignored unknown param" message is behind `#if ENABLE_DEBUG`, off in a
+normal build. (`AP_HAL::panic()` fires only if the *file* can't be opened.) Verified: a
+defaults file containing `RNGFND_LNADING` boots clean.
+
+So a misspelt param is indistinguishable from a working one — the same trap as gotcha
+#1. A clean boot proves nothing; read the live value over MAVLink.
 
 **4. macOS needs the FP-trap fix (`c7dc0f5`) or SITL dies at boot with SIGILL.**
 `--model quadplane` traps 100% of the time on an unfixed tree; plain `--model plane`

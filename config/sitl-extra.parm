@@ -1,9 +1,15 @@
 # Extra SITL defaults, layered on top of the frame's stock parameter file.
 # Loaded by ./sitl.sh through the SITL --defaults flag (comma-separated list).
 #
-# Every name here must exist in this firmware: SITL calls AP_HAL::panic() if a
-# defaults file contains an unknown parameter (AP_Param.cpp, load_defaults_file
-# _from_filesystem), so a stale name is a hard boot failure, not a warning.
+# Every name here must exist in this firmware -- and NOTHING TELLS YOU IF IT DOESN'T.
+# An unknown name is silently skipped: read_param_defaults_file() (AP_Param.cpp) sets
+# done_all=false and continues, load_defaults_file() still returns true, and the
+# "Ignored unknown param" printf is behind #if ENABLE_DEBUG (off in a normal build).
+# The panic only fires if the FILE cannot be opened. Verified: a defaults file holding
+# RNGFND_LNADING and THIS_IS_NOT_A_PARAM boots clean.
+#
+# So a typo here is a silent no-op -- the same failure mode as a stale eeprom value
+# below. The only proof a line is in force is reading the live value over MAVLink.
 #
 # These are DEFAULTS, not values. A parameter already written to
 # sitl-run/eeprom.bin -- by QGroundControl, or by an earlier session -- keeps
@@ -24,7 +30,9 @@ TERRAIN_ENABLE 0
 TERRAIN_FOLLOW 0
 
 # The simulated downward altimeter, modelled on the Benewake TF03 this airframe
-# actually carries: 0.1-180 m, 0.5 deg beam, used for landing only.
+# actually carries: 0.1-180 m. (The real sensor's 0.5 deg beam is NOT modelled --
+# SIM_Aircraft::rangefinder_beam_width() is 0, so the sim's beam is a pencil; there
+# is no parameter for it.)
 #
 # Type 100 is the SITL backend (AP_RangeFinder.h Type::SIM); it publishes SITL's
 # height_agl. That height is terrain-aware ONLY when TERRAIN_ENABLE=1 and a tile
@@ -60,8 +68,14 @@ RNGFND1_MAX_CM 18000
 # at RNGFND_LANDING=0 an in-range lidar can already re-cut the glide slope. Do not read
 # "0" as "the rangefinder is inert".
 #
-# Landing is still the only thing ArduPlane ever uses a rangefinder for, so "landing
-# only" needs no further restricting.
+# "Landing only" is true for FIXED-WING Plane. It is not the whole story on a QUADPLANE,
+# which is this branch's default frame: relative_ground_altitude() (altitude.cpp:116)
+# hands back the lidar height whenever (rangefinder_landing && in_range), with no
+# flight-stage gate. Most of its callers sit behind params that are 0 here
+# (Q_ASSIST_ALT, Q_FWD_THR_USE, Q_VFWD_GAIN, Q_WVANE_HGT_MIN, LGR_ENABLE) -- but
+# update_throttle_suppression() (quadplane.cpp:1965) has NO enabling param and runs
+# from motors_output() in every VTOL mode. So on a quadplane, RNGFND_LANDING 1 also
+# switches that motor-suppression height check from baro to the lidar.
 #
 # A stored eeprom.bin value beats this default -- ./sitl.sh says so, --wipe fixes it.
 RNGFND_LANDING 1
