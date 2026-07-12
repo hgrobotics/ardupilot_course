@@ -23,21 +23,43 @@
 TERRAIN_ENABLE 0
 TERRAIN_FOLLOW 0
 
-# Simulated downward rangefinder, so a terrain-clearance mission has an
-# altimeter to read. Type 100 is the SITL backend (AP_RangeFinder.h Type::SIM);
-# it publishes SITL's height_agl.
+# The simulated downward altimeter, modelled on the Benewake TF03 this airframe
+# actually carries: 0.1-180 m, 0.5 deg beam, used for landing only.
 #
-# That height is terrain-aware ONLY when TERRAIN_ENABLE=1 and a tile covers the
-# vehicle. Otherwise set_height_agl() (AP_HAL_SITL/SITL_State.cpp) silently
-# falls back to a flat-earth model and reports height above HOME. Nothing warns
-# you: the sensor still tracks your climbs and descents, it just never sees a
-# hill. ./sitl.sh --terrain checks for the tile up front for that reason.
+# Type 100 is the SITL backend (AP_RangeFinder.h Type::SIM); it publishes SITL's
+# height_agl. That height is terrain-aware ONLY when TERRAIN_ENABLE=1 and a tile
+# covers the vehicle. Otherwise set_height_agl() (AP_HAL_SITL/SITL_State.cpp)
+# silently falls back to a flat-earth model and reports height above HOME.
+# Nothing warns you: the sensor still tracks your climbs and descents, it just
+# never sees a hill. ./sitl.sh --terrain checks for the tile up front.
 RNGFND1_TYPE 100
 RNGFND1_ORIENT 25
-RNGFND1_MIN_CM 20
-# 32767 cm = 327.67 m is the ceiling, not a choice: min/max are AP_Int16
-# centimetres in 4.5.x (they become metre floats in 4.6's RNGFND1_MAX).
-RNGFND1_MAX_CM 32767
+
+# TF03 range, as AP_Int16 centimetres (these become metre floats in 4.6's
+# RNGFND1_MIN/MAX). Past MAX the frontend reports OutOfRangeHigh and Plane falls
+# back to the baro -- it does not clamp the value (AP_RangeFinder_Backend.cpp,
+# update_status).
+RNGFND1_MIN_CM 10
+# 18000 is not merely a cutoff. rangefinder_height_update() (ArduPlane/altitude.cpp)
+# scales its in-range latch off MAX: it wants 10 samples differing from the first
+# by >5% of MAX, and resets the count on a jump >20% of MAX. At the old 32767 those
+# gates were 16.4 m and 65.5 m; at the real 180 m they are 9 m and 36 m. Padding MAX
+# does not just admit impossible readings, it desensitises the landing latch.
+RNGFND1_MAX_CM 18000
+
+# Without this ArduPlane never reads the rangefinder at all: rangefinder_correction()
+# gates on (RNGFND_LANDING && flight_stage == LAND), so at the firmware default of 0
+# the TF03 is simulated and then ignored. Landing is also the only thing ArduPlane
+# ever uses a rangefinder for, so "landing only" needs no further restricting.
+#
+# A stored eeprom.bin value beats this default -- ./sitl.sh says so, --wipe fixes it.
+RNGFND_LANDING 1
+
+# Deliberately NOT set: SIM_SONAR_RND, the sensor noise amplitude (default 0). The
+# TF03's real error -- +/-10 cm close in, ~1% (1.8 m) at 180 m -- is dwarfed by the
+# ~6% baro bias in SITL-CHEATSHEET.md, and a deterministic sim is worth more than
+# cosmetic jitter. SIM_SONAR_GLITCH is dead code in 4.5.7: declared (SITL.h:186) and
+# registered (SITL.cpp:96) but never read, so setting it does nothing.
 
 # Log from boot rather than from arming, so a session that never arms still
 # leaves a .bin behind under sitl-run/logs/.
