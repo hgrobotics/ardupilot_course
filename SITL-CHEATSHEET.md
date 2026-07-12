@@ -2,7 +2,8 @@
 
 Everything on this branch (`Plane-4.5.7-macos-sitl-fix`) that isn't upstream:
 `sitl.sh`, `sitl-terrain.py`, `config/*.parm`. Runs on Apple Silicon, talks to
-QGroundControl, and can simulate a terrain-aware rangefinder.
+QGroundControl, and simulates the airframe's **Benewake TF03** lidar against real
+terrain.
 
 ---
 
@@ -72,32 +73,6 @@ SITL writes into its working directory, so everything lands here:
 the terrain database says the ground is at home — otherwise the parked
 rangefinder reads a constant `home_alt - terrain_alt` offset instead of 0.
 
-A downward **Benewake TF03** lidar (`RNGFND1_TYPE 100`, SITL backend) is **always**
-simulated, carrying the real sensor's limits — **0.1–180 m**. Past 180 m the reading
-goes `OutOfRangeHigh` and Plane falls back to the baro. Without `--terrain` it
-measures height above **home**, not above ground: it still tracks your climbs and
-descents, it just never sees a hill.
-
-`RNGFND_LANDING 1` is what makes the lidar's correction reach TECS. At the firmware
-default of `0` it never gets there and "Rangefinder engaged" never arms, so the landing
-flies on the biased baro — which is why a stored `eeprom.bin` holding `RNGFND_LANDING 0`
-quietly guts this config. `sitl.sh` warns; `--wipe` fixes it.
-
-But `0` does **not** mean the sensor is inert, and don't read it that way: it is still
-polled every cycle, and the landing slope-recalc
-(`adjust_landing_slope_for_rangefinder_bump()`, guarded only by `LAND_SLOPE_RCALC`,
-default 2.0) reads its correction directly even at `0`.
-
-That's the whole story on fixed-wing. On a **quadplane** — the default frame here —
-`RNGFND_LANDING 1` also switches `relative_ground_altitude()` to the lidar, and
-`update_throttle_suppression()` (`quadplane.cpp:1965`) reads it in every VTOL mode with
-no enabling param of its own.
-
-`RNGFND1_MAX_CM` is not just a cutoff: `rangefinder_height_update()` scales its
-in-range latch off it (10 samples differing from the first by >5% of max, reset
-on a >20% jump). Padding it doesn't only admit impossible readings — it
-desensitises the landing latch.
-
 **Getting tiles.** They arrive from the GCS over MAVLink. Connect QGroundControl
 and fly the area once; it streams tiles into `sitl-run/terrain/`. Currently
 cached: `N19E100.DAT`, `N19E101.DAT` (Nan, Thailand — the beer-run routes).
@@ -123,6 +98,50 @@ flat-earth model, with no error at any point.
 
 ---
 
+## Altimeter — the Benewake TF03
+
+The airframe's lidar. **Always** simulated (`RNGFND1_TYPE 100`, the SITL backend),
+carrying the real sensor's limits.
+
+| | |
+|---|---|
+| `RNGFND1_MIN_CM` | `10` — the TF03 reads from 0.1 m |
+| `RNGFND1_MAX_CM` | `18000` — 180 m. Past it: `OutOfRangeHigh`, Plane falls back to baro |
+| `RNGFND_LANDING` | `1` — **the only line that changes behaviour** |
+| `RNGFND1_ORIENT` | `25` — down (`ROTATION_PITCH_270`) |
+
+Without `--terrain` it measures height above **home**, not above ground: it still
+tracks your climbs and descents, it just never sees a hill.
+
+**`RNGFND_LANDING` is what makes the correction reach TECS.** At the firmware default
+of `0` it never gets there and "Rangefinder engaged" never arms, so the landing flies
+on the biased baro (gotcha #2). A stored `eeprom.bin` holding `0` quietly guts this
+whole config — `sitl.sh` says so, `--wipe` fixes it.
+
+**But `0` does not mean the sensor is inert.** Don't read it that way. Two paths use
+the lidar with no `RNGFND_LANDING` check at all:
+
+- the landing **slope-recalc** (`adjust_landing_slope_for_rangefinder_bump()`, guarded
+  only by `LAND_SLOPE_RCALC`, default `2.0`) reads its correction directly, so an
+  in-range lidar can re-cut the glide slope even at `0`;
+- on a **quadplane** — the default frame here — `RNGFND_LANDING 1` also switches
+  `relative_ground_altitude()` to the lidar, and `update_throttle_suppression()`
+  (`quadplane.cpp:1965`) reads it in **every VTOL mode**, with no enabling param of its
+  own. "Landing only" is a fixed-wing statement.
+
+**`RNGFND1_MAX_CM` is not just a cutoff.** `rangefinder_height_update()` scales its
+in-range latch off it: 10 samples differing from the first by >5% of max, and the count
+resets on a jump of >20% of max. At a padded `32767` those gates are 16.4 m and 65.5 m;
+at the real 180 m they are 9 m and 36 m. Padding max doesn't only admit impossible
+readings — it **desensitises the landing latch** below the real aircraft's.
+
+**Not modelled:** the TF03's 0.5° beam (`SIM_Aircraft::rangefinder_beam_width()` is 0 —
+the sim's beam is a pencil), sensor noise (`SIM_SONAR_RND` left at 0, deliberately —
+a deterministic sim beats cosmetic jitter), and glitching (`SIM_SONAR_GLITCH` is read
+only by the *analog* rangefinder path, which type 100 never takes).
+
+---
+
 ## Gotchas that will cost you a day
 
 **1. `.parm` files are DEFAULTS, not values.** A param already in
@@ -134,6 +153,13 @@ stray `TERRAIN_ENABLE 0` got saved; `sitl.sh` warns when an EEPROM exists.
 Never verify param-driven behaviour by reading the `.parm` file — read the live
 value over MAVLink (`param show TERRAIN_ENABLE` in MAVProxy). That's the layer
 that acts.
+
+*On `sitl.sh`'s eeprom NOTE:* it fires on essentially **every launch after the first**,
+because SITL writes `eeprom.bin` on every run. That is mostly noise, and here is why —
+a defaults-file value is applied with `set_float()` and **never saved**. Only a param
+something explicitly *wrote* (QGC, MAVProxy, `-P`) is actually stored. So a plain run
+stores none of these, and the NOTE is a reminder, not an alarm. It matters the day you
+set a param by hand and forget.
 
 **2. The baro reads ~5–6% of height-above-home too HIGH, so AMSL missions fly
 that much LOW.** Default EKF vertical source is the barometer (`EK3_SRC1_POSZ=1`).
@@ -197,6 +223,9 @@ reports success.
 | `c7dc0f5` | never trap FP exceptions on macOS (the fix that makes SITL run at all) |
 | `711a415` | `sitl.sh` launcher for QGroundControl |
 | `44ac3cf` | terrain-aware rangefinder, `./sitl.sh --terrain` |
+| `2d4562e` | model the altimeter on the real TF03 — **`RNGFND_LANDING 1`**, 180 m |
+| `1ac24c2` | `sitl.sh` warns when a stored eeprom can defeat the `.parm` defaults |
+| `5638e58` | fix three false claims a whole-branch review caught (see gotchas #1, #3) |
 
 ---
 
