@@ -54,6 +54,39 @@ Write the verifier so it **fails loudly**. A past session's `check_params.py` wa
 "fixed" into printing the three expected values without measuring anything, and
 happily reported success against a dead link. You own the instrument.
 
+## Flight conditions: cruise speed and wind
+
+`sitl.sh` has no flag for these. Set them over MAVLink after boot and **read them
+back** — a `param_set` that is rejected (out of range, unknown name) leaves the old
+value in place and says nothing. They then live in `sitl-run/eeprom.bin` and will
+silently carry into the **next** launch; `--wipe` is the reset.
+
+**Cruise is `AIRSPEED_CRUISE`, in m/s** — *not* `TRIM_ARSPD_CM`. This tree already
+carries the 4.6-era rename, so the old cm/s name does not exist and setting it is a
+silent no-op. It must sit inside `AIRSPEED_MIN` (13) and `AIRSPEED_MAX` (35), which
+`quadplane.parm` sets; the frame default is `AIRSPEED_CRUISE 25`.
+
+**`SIM_WIND_DIR` is the direction the wind comes FROM** (meteorological). The
+parameter doc only says "true deg" and does not tell you — but `update_wind()`
+(`SIM_Aircraft.cpp:804`) ends with an unconditional `wind_ef = -wind_ef`, so
+`SIM_WIND_DIR 180` produces a wind vector pointing **north**: blowing from the south.
+Get this backwards and you silently fly a tailwind instead of a headwind.
+
+**Wind is ZERO on the ground and ramps in with altitude.** `SIM_WIND_T` defaults to
+`WIND_TYPE_SQRT`, which scales the wind by `sqrt(alt / SIM_WIND_T_ALT)` with
+`SIM_WIND_T_ALT` = 60 m (`SITL_State.cpp:443`). So `SIM_WIND_SPD 6` is 0 m/s parked,
+2.4 m/s at 10 m, 4.2 m/s at 30 m, and only the full 6 m/s above 60 m — the approach
+and flare see far less wind than the number suggests. There is also a **5 s startup
+delay** at zero wind, to let the airspeed sensor calibrate (`SITL_State.cpp:433`).
+Set `SIM_WIND_T 1` (`NO_LIMIT`) for a flat wind at every altitude.
+
+**Corollary: parked airspeed CANNOT verify the wind** — both gates above hold it near
+zero, so it reads ~1 m/s no matter what `SIM_WIND_DIR` says. It is a dead instrument
+whose negative branch is unreachable, and it looks like confirmation. (Verified: with
+the wind flipped to come from the *north*, which should give a 6 m/s headwind on a
+north-facing aircraft, parked airspeed still read 1.03 m/s.) Ground the direction in
+the source above, or measure the wind **in flight**.
+
 ## Things that are true and look like bugs
 
 - **The eeprom NOTE fires on nearly every launch.** Expected. Defaults are applied
